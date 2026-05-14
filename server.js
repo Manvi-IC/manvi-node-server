@@ -12,16 +12,17 @@ const fastify = Fastify({
   logger: true
 });
 
-// Register CORS
+// --- CROSS-ORIGIN CONFIGURATION ---
 const frontendUrl = process.env.FRONTEND_URL || "*";
 
+// Main API CORS
 fastify.register(fastifyCors, {
   origin: frontendUrl === "*" ? true : [frontendUrl],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 });
 
-// Register Socket.io
+// Real-time (Socket.io) CORS & Transports
 fastify.register(fastifyIO, {
   cors: {
     origin: frontendUrl,
@@ -36,18 +37,18 @@ fastify.get('/', async (request, reply) => {
   return { status: 'M5 Node Server is Running', version: '1.0.0' };
 });
 
-// Get list of users who have had conversations with current user (Optimized with Aggregation)
+// --- CHAT API ROUTES ---
+
+// 1. Get Recent Conversations (WhatsApp Style Aggregation)
 fastify.get('/chat/recent-users', async (request, reply) => {
   const { userId } = request.query;
   try {
     const recentConversations = await Message.aggregate([
-      { 
-        $match: { 
-          $or: [{ senderId: userId }, { receiverId: userId }],
-          type: 'private' 
-        } 
-      },
-      { $sort: { timestamp: -1 } }, // Sort to get latest messages first
+      // Find all messages involving the user
+      { $match: { $or: [{ senderId: userId }, { receiverId: userId }] } },
+      // Sort by newest first
+      { $sort: { timestamp: -1 } },
+      // Group by the "other person" in the chat
       {
         $group: {
           _id: {
@@ -57,20 +58,21 @@ fastify.get('/chat/recent-users', async (request, reply) => {
               "$senderId"
             ]
           },
+          lastMessage: { $first: "$text" },
           lastTimestamp: { $first: "$timestamp" }
         }
       },
-      { $sort: { lastTimestamp: -1 } } // Sort conversation list by most recent activity
+      // Sort the final list by the timestamp of the last message
+      { $sort: { lastTimestamp: -1 } }
     ]);
 
-    const recentIds = recentConversations.map(conv => conv._id);
-    return { success: true, data: recentIds };
+    return { success: true, data: recentConversations };
   } catch (error) {
     return { success: false, message: error.message };
   }
 });
 
-// Get unread counts for a user
+// 2. Get Unread Message Counts per User
 fastify.get('/chat/unread-counts', async (request, reply) => {
   const { userId } = request.query;
   try {
@@ -151,39 +153,46 @@ const start = async () => {
     
     console.log(`Server listening on http://localhost:${port}`);
 
-    fastify.ready((err) => {
-      if (err) throw err;
+// --- REAL-TIME EVENT HANDLING (SOCKET.IO) ---
+fastify.ready((err) => {
+  if (err) throw err;
 
-      fastify.io.on('connection', (socket) => {
-        console.log('A user connected:', socket.id);
+  fastify.io.on('connection', (socket) => {
+    console.log('A user connected:', socket.id);
 
-        socket.on('join_chat', (userId) => {
-          socket.join(userId);
-          console.log(`User ${userId} joined their chat room`);
+    // Join a private room based on userId for targeted messaging
+    socket.on('join_chat', (userId) => {
+      socket.join(userId);
+      console.log(`User ${userId} joined their chat room`);
+    });
+
+    // Handle outgoing messages
+    socket.on('send_message', async (data) => {
+      try {
+        // Save message to MongoDB
+        const newMessage = new Message({
+          senderId: data.senderId,
+          senderName: data.senderName,
+          receiverId: data.receiverId,
+          receiverName: data.receiverName,
+          text: data.text,
+          type: data.type || 'private'
         });
+        
+        await newMessage.save();
 
-        socket.on('send_message', async (data) => {
-          try {
-            const newMessage = new Message({
-              senderId: data.senderId,
-              senderName: data.senderName,
-              receiverId: data.receiverId,
-              receiverName: data.receiverName,
-              text: data.text,
-              type: data.type || 'private'
-            });
-            
-            await newMessage.save();
-
-            if (data.type === 'broadcast') {
-              fastify.io.emit('receive_message', newMessage);
-            } else {
-              fastify.io.to(data.receiverId).to(data.senderId).emit('receive_message', newMessage);
-            }
-          } catch (error) {
-            console.error('Socket Error (send_message):', error);
-          }
-        });
+        // Broadcast to everyone (for Team announcements)
+        if (data.type === 'broadcast') {
+          fastify.io.emit('receive_message', newMessage);
+        } 
+        // Or send only to the specific receiver and back to the sender
+        else {
+          fastify.io.to(data.receiverId).to(data.senderId).emit('receive_message', newMessage);
+        }
+      } catch (error) {
+        console.error('Socket Error (send_message):', error);
+      }
+    });
 
         socket.on('disconnect', () => {
           console.log('User disconnected:', socket.id);

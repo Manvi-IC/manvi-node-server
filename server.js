@@ -57,14 +57,14 @@ fastify.get('/chat/recent-users', async (request, reply) => {
               "$senderId"
             ]
           },
+          lastMessage: { $first: "$text" },
           lastTimestamp: { $first: "$timestamp" }
         }
       },
       { $sort: { lastTimestamp: -1 } } // Sort conversation list by most recent activity
     ]);
 
-    const recentIds = recentConversations.map(conv => conv._id);
-    return { success: true, data: recentIds };
+    return { success: true, data: recentConversations };
   } catch (error) {
     return { success: false, message: error.message };
   }

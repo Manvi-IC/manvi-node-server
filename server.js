@@ -27,7 +27,8 @@ fastify.register(fastifyIO, {
     origin: frontendUrl,
     methods: ["GET", "POST"],
     credentials: true
-  }
+  },
+  transports: ["websocket"]
 });
 
 // Health check route

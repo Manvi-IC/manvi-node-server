@@ -13,8 +13,10 @@ const fastify = Fastify({
 });
 
 // Register CORS
+const frontendUrl = process.env.FRONTEND_URL || "*";
+
 fastify.register(fastifyCors, {
-  origin: true,
+  origin: frontendUrl === "*" ? true : [frontendUrl],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 });
@@ -22,14 +24,84 @@ fastify.register(fastifyCors, {
 // Register Socket.io
 fastify.register(fastifyIO, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: frontendUrl,
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
 // Health check route
 fastify.get('/', async (request, reply) => {
   return { status: 'M5 Node Server is Running', version: '1.0.0' };
+});
+
+// Get list of users who have had conversations with current user (Optimized with Aggregation)
+fastify.get('/chat/recent-users', async (request, reply) => {
+  const { userId } = request.query;
+  try {
+    const recentConversations = await Message.aggregate([
+      { 
+        $match: { 
+          $or: [{ senderId: userId }, { receiverId: userId }],
+          type: 'private' 
+        } 
+      },
+      { $sort: { timestamp: -1 } }, // Sort to get latest messages first
+      {
+        $group: {
+          _id: {
+            $cond: [
+              { $eq: ["$senderId", userId] },
+              "$receiverId",
+              "$senderId"
+            ]
+          },
+          lastTimestamp: { $first: "$timestamp" }
+        }
+      },
+      { $sort: { lastTimestamp: -1 } } // Sort conversation list by most recent activity
+    ]);
+
+    const recentIds = recentConversations.map(conv => conv._id);
+    return { success: true, data: recentIds };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+});
+
+// Get unread counts for a user
+fastify.get('/chat/unread-counts', async (request, reply) => {
+  const { userId } = request.query;
+  try {
+    const unreadMessages = await Message.find({
+      receiverId: userId,
+      read: false,
+      type: 'private'
+    }).select('senderId');
+
+    const counts = {};
+    unreadMessages.forEach(msg => {
+      counts[msg.senderId] = (counts[msg.senderId] || 0) + 1;
+    });
+
+    return { success: true, data: counts };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+});
+
+// Mark messages as read
+fastify.post('/chat/mark-read', async (request, reply) => {
+  const { userId, senderId } = request.body;
+  try {
+    await Message.updateMany(
+      { receiverId: userId, senderId: senderId, read: false },
+      { $set: { read: true } }
+    );
+    return { success: true };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
 });
 
 // Chat History Route

@@ -176,7 +176,9 @@ fastify.ready((err) => {
           receiverId: data.receiverId,
           receiverName: data.receiverName,
           text: data.text,
-          type: data.type || 'private'
+          type: data.type || 'private',
+          title: data.title,
+          priority: data.priority || 'normal'
         });
         
         await newMessage.save();

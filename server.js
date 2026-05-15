@@ -154,6 +154,9 @@ const start = async () => {
     console.log(`Server listening on http://localhost:${port}`);
 
 // --- REAL-TIME EVENT HANDLING (SOCKET.IO) ---
+const userSockets = new Map(); // userId -> Set(socket.id)
+const userStatuses = new Map(); // userId -> 'online' | 'away'
+
 fastify.ready((err) => {
   if (err) throw err;
 
@@ -163,7 +166,29 @@ fastify.ready((err) => {
     // Join a private room based on userId for targeted messaging
     socket.on('join_chat', (userId) => {
       socket.join(userId);
+      socket.userId = userId;
+
+      if (!userSockets.has(userId)) {
+         userSockets.set(userId, new Set());
+      }
+      userSockets.get(userId).add(socket.id);
+      
+      userStatuses.set(userId, 'online');
+      fastify.io.emit('status_update', { userId, status: 'online' });
+      
+      // Send current statuses to the newly joined user
+      socket.emit('all_statuses', Object.fromEntries(userStatuses));
+
       console.log(`User ${userId} joined their chat room`);
+    });
+
+    // Handle manual status changes (e.g. going away)
+    socket.on('set_status', (data) => {
+       const { userId, status } = data;
+       if (userId && userSockets.has(userId)) {
+          userStatuses.set(userId, status);
+          fastify.io.emit('status_update', { userId, status });
+       }
     });
 
     // Handle outgoing messages
@@ -198,6 +223,15 @@ fastify.ready((err) => {
 
         socket.on('disconnect', () => {
           console.log('User disconnected:', socket.id);
+          const userId = socket.userId;
+          if (userId && userSockets.has(userId)) {
+            userSockets.get(userId).delete(socket.id);
+            if (userSockets.get(userId).size === 0) {
+              userSockets.delete(userId);
+              userStatuses.delete(userId);
+              fastify.io.emit('status_update', { userId, status: 'offline' });
+            }
+          }
         });
       });
     });

@@ -6,6 +6,8 @@ const messageSchema = new mongoose.Schema({
   receiverId: { type: String, required: true }, // 'broadcast' for team-wide
   receiverName: { type: String, required: true },
   text: { type: String, required: true },
+  title: { type: String }, // For broadcasts
+  priority: { type: String, enum: ['normal', 'important', 'urgent'], default: 'normal' }, // For broadcasts
   type: { type: String, enum: ["private", "broadcast"], default: "private" },
   timestamp: { type: Date, default: Date.now },
   read: { type: Boolean, default: false },

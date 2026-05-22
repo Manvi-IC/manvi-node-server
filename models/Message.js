@@ -17,6 +17,8 @@ const messageSchema = new mongoose.Schema({
 messageSchema.index({ senderId: 1, receiverId: 1, timestamp: -1 });
 messageSchema.index({ receiverId: 1, read: 1 }); // Fast unread count fetching
 messageSchema.index({ timestamp: -1 }); // Fast sorting for recent lists
+messageSchema.index({ senderId: 1, timestamp: -1 }); // Fast recent conversation querying
+messageSchema.index({ receiverId: 1, timestamp: -1 }); // Fast recent conversation querying
 
 const Message = mongoose.model("Message", messageSchema);
 export default Message;

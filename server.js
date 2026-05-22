@@ -4,6 +4,7 @@ import fastifyIO from 'fastify-socket.io';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import Message from './models/Message.js';
+import Task from './models/Task.js';
 
 // Load environment variables
 dotenv.config();
@@ -107,6 +108,38 @@ fastify.post('/chat/mark-read', async (request, reply) => {
   }
 });
 
+// Get Unread Task Count
+fastify.get('/tasks/unread-count', async (request, reply) => {
+  const { userId } = request.query;
+  try {
+    const unreadCount = await Task.countDocuments({
+      "assignedTo.userId": userId,
+      isRead: false,
+      status: { $ne: "completed" }
+    });
+    return { success: true, count: unreadCount };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+});
+
+// Trigger a real-time Task count push to the user's socket
+fastify.post('/tasks/trigger-update', async (request, reply) => {
+  const { userId } = request.body;
+  try {
+    const unreadCount = await Task.countDocuments({
+      "assignedTo.userId": userId,
+      isRead: false,
+      status: { $ne: "completed" }
+    });
+    
+    fastify.io.to(userId).emit('task_unread_count', { count: unreadCount });
+    return { success: true, count: unreadCount };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+});
+
 // Chat History Route
 fastify.get('/chat/history', async (request, reply) => {
   const { user1, user2, type } = request.query;
@@ -164,7 +197,7 @@ fastify.ready((err) => {
     console.log('A user connected:', socket.id);
 
     // Join a private room based on userId for targeted messaging
-    socket.on('join_chat', (userId) => {
+    socket.on('join_chat', async (userId) => {
       socket.join(userId);
       socket.userId = userId;
 
@@ -178,6 +211,18 @@ fastify.ready((err) => {
       
       // Send current statuses to the newly joined user
       socket.emit('all_statuses', Object.fromEntries(userStatuses));
+
+      // Push initial unread task count on connect
+      try {
+        const unreadCount = await Task.countDocuments({
+          "assignedTo.userId": userId,
+          isRead: false,
+          status: { $ne: "completed" }
+        });
+        socket.emit('task_unread_count', { count: unreadCount });
+      } catch (err) {
+        console.error("Failed to push initial task count:", err);
+      }
 
       console.log(`User ${userId} joined their chat room`);
     });

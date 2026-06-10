@@ -4,6 +4,7 @@ import fastifyIO from 'fastify-socket.io';
 import fastifyCompress from '@fastify/compress';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 import Message from './models/Message.js';
 import Task from './models/Task.js';
 import Admin from './models/Admin.js';
@@ -181,6 +182,8 @@ fastify.get('/chat/recent-users', {
   }
 }, async (request, reply) => {
   const { userId } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     const recentConversations = await Message.aggregate([
       // Find all messages involving the user
@@ -237,6 +240,8 @@ fastify.get('/chat/unread-counts', {
   }
 }, async (request, reply) => {
   const { userId } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     const unreadCounts = await Message.aggregate([
       {
@@ -290,6 +295,8 @@ fastify.post('/chat/mark-read', {
   }
 }, async (request, reply) => {
   const { userId, senderId } = request.body;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     await Message.updateMany(
       { receiverId: userId, senderId: senderId, read: false },
@@ -324,6 +331,8 @@ fastify.get('/tasks/unread-count', {
   }
 }, async (request, reply) => {
   const { userId } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Task } = getTenantModels(dbName);
   try {
     const unreadCount = await Task.countDocuments({
       "assignedTo.userId": userId,
@@ -359,6 +368,8 @@ fastify.post('/tasks/trigger-update', {
   }
 }, async (request, reply) => {
   const { userId } = request.body;
+  const dbName = request.headers['x-database'];
+  const { Task } = getTenantModels(dbName);
   try {
     const unreadCount = await Task.countDocuments({
       "assignedTo.userId": userId,
@@ -417,6 +428,8 @@ fastify.get('/chat/history', {
   }
 }, async (request, reply) => {
   const { user1, user2, type } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     if (type === 'broadcast') {
       const messages = await Message.find({ type: 'broadcast' })
@@ -480,6 +493,8 @@ fastify.ready((err) => {
 
   fastify.io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
+    const dbName = socket.handshake.headers['x-database'] || socket.handshake.auth?.database;
+    const { Message, Task } = getTenantModels(dbName);
 
     // Join a private room based on userId for targeted messaging
     socket.on('join_chat', async (userId) => {

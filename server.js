@@ -3,8 +3,11 @@ import fastifyCors from '@fastify/cors';
 import fastifyIO from 'fastify-socket.io';
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
 import Message from './models/Message.js';
 import Task from './models/Task.js';
+import Admin from './models/Admin.js';
+import SiteSettings from './models/SiteSettings.js';
 
 // Load environment variables
 dotenv.config();
@@ -38,11 +41,82 @@ fastify.get('/', async (request, reply) => {
   return { status: 'M5 Node Server is Running', version: '1.0.0' };
 });
 
+// Function to get tenant models dynamically
+const getTenantModels = (dbName) => {
+  if (!dbName || dbName === 'm5clogs') {
+    return { Message, Task, Admin, SiteSettings };
+  }
+  const tenantDb = mongoose.connection.useDb(dbName, { useCache: true });
+  return {
+    Message: tenantDb.models.Message || tenantDb.model('Message', Message.schema),
+    Task: tenantDb.models.Task || tenantDb.model('Task', Task.schema),
+    Admin: tenantDb.models.Admin || tenantDb.model('Admin', Admin.schema),
+    SiteSettings: tenantDb.models.SiteSettings || tenantDb.model('SiteSettings', SiteSettings.schema)
+  };
+};
+
+// --- SITE SETTINGS API ROUTES ---
+fastify.get('/site-settings', async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  const { SiteSettings } = getTenantModels(dbName);
+  try {
+    let settings = await SiteSettings.findOne({});
+    if (!settings) {
+      settings = await SiteSettings.create({});
+    }
+    return { success: true, data: settings };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+});
+
+fastify.put('/site-settings', async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  const { SiteSettings } = getTenantModels(dbName);
+  try {
+    let settings = await SiteSettings.findOne({});
+    if (!settings) {
+      settings = new SiteSettings(request.body);
+      await settings.save();
+    } else {
+      settings = await SiteSettings.findOneAndUpdate({}, request.body, { new: true });
+    }
+    return { success: true, data: settings };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+});
+
+// --- ADMIN API ROUTES ---
+fastify.post('/admin/login', async (request, reply) => {
+  const { username, password } = request.body;
+  const dbName = request.headers['x-database'];
+  const { Admin } = getTenantModels(dbName);
+  
+  try {
+    const adminUser = await Admin.findOne({ username });
+    if (!adminUser) {
+      return { success: false, message: 'Invalid credentials' };
+    }
+    
+    const isMatch = await bcrypt.compare(password, adminUser.password);
+    if (!isMatch) {
+      return { success: false, message: 'Invalid credentials' };
+    }
+    
+    return { success: true, message: 'Login successful' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+});
+
 // --- CHAT API ROUTES ---
 
 // 1. Get Recent Conversations (WhatsApp Style Aggregation)
 fastify.get('/chat/recent-users', async (request, reply) => {
   const { userId } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     const recentConversations = await Message.aggregate([
       // Find all messages involving the user
@@ -76,6 +150,8 @@ fastify.get('/chat/recent-users', async (request, reply) => {
 // 2. Get Unread Message Counts per User
 fastify.get('/chat/unread-counts', async (request, reply) => {
   const { userId } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     const unreadMessages = await Message.find({
       receiverId: userId,
@@ -97,6 +173,8 @@ fastify.get('/chat/unread-counts', async (request, reply) => {
 // Mark messages as read
 fastify.post('/chat/mark-read', async (request, reply) => {
   const { userId, senderId } = request.body;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     await Message.updateMany(
       { receiverId: userId, senderId: senderId, read: false },
@@ -111,6 +189,8 @@ fastify.post('/chat/mark-read', async (request, reply) => {
 // Get Unread Task Count
 fastify.get('/tasks/unread-count', async (request, reply) => {
   const { userId } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Task } = getTenantModels(dbName);
   try {
     const unreadCount = await Task.countDocuments({
       "assignedTo.userId": userId,
@@ -126,6 +206,8 @@ fastify.get('/tasks/unread-count', async (request, reply) => {
 // Trigger a real-time Task count push to the user's socket
 fastify.post('/tasks/trigger-update', async (request, reply) => {
   const { userId } = request.body;
+  const dbName = request.headers['x-database'];
+  const { Task } = getTenantModels(dbName);
   try {
     const unreadCount = await Task.countDocuments({
       "assignedTo.userId": userId,
@@ -143,6 +225,8 @@ fastify.post('/tasks/trigger-update', async (request, reply) => {
 // Chat History Route
 fastify.get('/chat/history', async (request, reply) => {
   const { user1, user2, type } = request.query;
+  const dbName = request.headers['x-database'];
+  const { Message } = getTenantModels(dbName);
   try {
     if (type === 'broadcast') {
       const messages = await Message.find({ type: 'broadcast' })
@@ -195,6 +279,8 @@ fastify.ready((err) => {
 
   fastify.io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
+    const dbName = socket.handshake.headers['x-database'] || socket.handshake.auth?.database;
+    const { Message, Task } = getTenantModels(dbName);
 
     // Join a private room based on userId for targeted messaging
     socket.on('join_chat', async (userId) => {

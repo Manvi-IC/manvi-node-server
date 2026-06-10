@@ -6,6 +6,23 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import Message from './models/Message.js';
 import Task from './models/Task.js';
+import Admin from './models/Admin.js';
+import SiteSettings from './models/SiteSettings.js';
+import bcrypt from 'bcryptjs';
+
+// Function to get tenant models dynamically
+const getTenantModels = (dbName) => {
+  if (!dbName || dbName === 'm5clogs') {
+    return { Message, Task, Admin, SiteSettings };
+  }
+  const tenantDb = mongoose.connection.useDb(dbName, { useCache: true });
+  return {
+    Message: tenantDb.models.Message || tenantDb.model('Message', Message.schema),
+    Task: tenantDb.models.Task || tenantDb.model('Task', Task.schema),
+    Admin: tenantDb.models.Admin || tenantDb.model('Admin', Admin.schema),
+    SiteSettings: tenantDb.models.SiteSettings || tenantDb.model('SiteSettings', SiteSettings.schema)
+  };
+};
 
 // Load environment variables
 dotenv.config();
@@ -60,6 +77,74 @@ fastify.get('/', {
   }
 }, async (request, reply) => {
   return { status: 'M5 Node Server is Running', version: '1.0.0' };
+});
+
+// --- SITE SETTINGS API ROUTES ---
+fastify.get('/site-settings', async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  if (!dbName) {
+    return reply.status(400).send({ success: false, message: 'x-database header is required' });
+  }
+
+  try {
+    const { SiteSettings } = getTenantModels(dbName);
+    let settings = await SiteSettings.findOne();
+    if (!settings) {
+      settings = await SiteSettings.create({});
+    }
+    return { success: true, data: settings };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: 'Failed to fetch settings' });
+  }
+});
+
+fastify.put('/site-settings', async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  if (!dbName) {
+    return reply.status(400).send({ success: false, message: 'x-database header is required' });
+  }
+
+  try {
+    const { SiteSettings } = getTenantModels(dbName);
+    const updated = await SiteSettings.findOneAndUpdate({}, request.body, { new: true, upsert: true });
+    return { success: true, data: updated };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: 'Failed to update settings' });
+  }
+});
+
+// --- ADMIN LOGIN ---
+fastify.post('/admin/login', async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  if (!dbName) {
+    return reply.status(400).send({ success: false, message: 'x-database header is required' });
+  }
+
+  try {
+    const { username, password } = request.body;
+    const { Admin } = getTenantModels(dbName);
+    
+    // Auto-seed admin if none exist
+    const adminCount = await Admin.countDocuments();
+    if (adminCount === 0) {
+      const hash = await bcrypt.hash('password', 10);
+      await Admin.create({ username: 'admin', passwordHash: hash });
+    }
+
+    const admin = await Admin.findOne({ username });
+    if (!admin) {
+      return reply.status(401).send({ success: false, message: 'Invalid credentials' });
+    }
+
+    const match = await bcrypt.compare(password, admin.passwordHash);
+    if (!match) {
+      return reply.status(401).send({ success: false, message: 'Invalid credentials' });
+    }
+
+    return { success: true, message: 'Login successful' };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: 'Login failed' });
+  }
 });
 
 // --- CHAT API ROUTES ---

@@ -9,7 +9,6 @@ import Message from './models/Message.js';
 import Task from './models/Task.js';
 import Admin from './models/Admin.js';
 import SiteSettings from './models/SiteSettings.js';
-import bcrypt from 'bcryptjs';
 
 // Function to get tenant models dynamically
 const getTenantModels = (dbName) => {

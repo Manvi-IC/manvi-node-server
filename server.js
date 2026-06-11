@@ -116,6 +116,7 @@ fastify.put('/site-settings', async (request, reply) => {
 // --- ADMIN LOGIN ---
 fastify.post('/admin/login', async (request, reply) => {
   const dbName = request.headers['x-database'];
+  console.log('Login attempt - dbName:', dbName, 'body:', request.body); // ADD THIS
   if (!dbName) {
     return reply.status(400).send({ success: false, message: 'x-database header is required' });
   }
@@ -124,14 +125,15 @@ fastify.post('/admin/login', async (request, reply) => {
     const { username, password } = request.body;
     const { Admin } = getTenantModels(dbName);
     
-    // Auto-seed admin if none exist
     const adminCount = await Admin.countDocuments();
+    console.log('Admin count:', adminCount); // ADD THIS
     if (adminCount === 0) {
       const hash = await bcrypt.hash('password', 10);
       await Admin.create({ username: 'admin', passwordHash: hash });
     }
 
     const admin = await Admin.findOne({ username });
+    console.log('Found admin:', admin); // ADD THIS
     if (!admin) {
       return reply.status(401).send({ success: false, message: 'Invalid credentials' });
     }
@@ -143,6 +145,7 @@ fastify.post('/admin/login', async (request, reply) => {
 
     return { success: true, message: 'Login successful' };
   } catch (error) {
+    console.error('Admin login error:', error); // ADD THIS
     return reply.status(500).send({ success: false, message: 'Login failed' });
   }
 });

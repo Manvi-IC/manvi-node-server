@@ -19,17 +19,17 @@ import UploadLog from "./models/UploadLog.js";
 
 const getTenantModels = (dbName) => {
   if (!dbName || dbName === "m5clogs") {
-    return { Message, Task, Admin, SiteSettings };
+    return { Message, Task, Admin, SiteSettings, UploadLog, ZipZone, WalkinRate };
   }
   const tenantDb = mongoose.connection.useDb(dbName, { useCache: true });
   return {
-    Message:
-      tenantDb.models.Message || tenantDb.model("Message", Message.schema),
+    Message: tenantDb.models.Message || tenantDb.model("Message", Message.schema),
     Task: tenantDb.models.Task || tenantDb.model("Task", Task.schema),
     Admin: tenantDb.models.Admin || tenantDb.model("Admin", Admin.schema),
-    SiteSettings:
-      tenantDb.models.SiteSettings ||
-      tenantDb.model("SiteSettings", SiteSettings.schema),
+    SiteSettings: tenantDb.models.SiteSettings || tenantDb.model("SiteSettings", SiteSettings.schema),
+    UploadLog: tenantDb.models.UploadLog || tenantDb.model("UploadLog", UploadLog.schema),
+    ZipZone: tenantDb.models.ZipZone || tenantDb.model("ZipZone", ZipZone.schema),
+    WalkinRate: tenantDb.models.WalkinRate || tenantDb.model("WalkinRate", WalkinRate.schema),
   };
 };
 
@@ -409,6 +409,9 @@ function estimateTat(service) {
 }
 
 fastify.post("/rates/upload", async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  const { UploadLog, ZipZone, WalkinRate } = getTenantModels(dbName);
+
   try {
     const data = await request.file();
     if (!data)
@@ -430,7 +433,7 @@ fastify.post("/rates/upload", async (request, reply) => {
     });
     const headerRow = (peekRaw[0] || []).join(",").toUpperCase();
     const isZoningFile =
-      (headerRow.includes("NETWORK") && !headerRow.includes("ZIPCODE")) ||
+      (!headerRow.includes("SHIPPER") && headerRow.includes("NETWORK") && !headerRow.includes("ZIPCODE")) ||
       (peekRaw[1] || []).join(",").toUpperCase().includes("FORWARDER");
 
     let fileType;
@@ -528,6 +531,9 @@ fastify.post("/rates/upload", async (request, reply) => {
 });
 
 fastify.get("/rates/uploads", async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  const { UploadLog } = getTenantModels(dbName);
+
   try {
     const logs = await UploadLog.find({})
       .sort({ createdAt: -1 })
@@ -540,6 +546,9 @@ fastify.get("/rates/uploads", async (request, reply) => {
 });
 
 fastify.get("/rates/services", async (request, reply) => {
+  const dbName = request.headers['x-database'];
+  const { WalkinRate, ZipZone } = getTenantModels(dbName);
+
   try {
     const rateServices = await WalkinRate.aggregate([
       {

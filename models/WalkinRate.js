@@ -7,7 +7,7 @@ const walkinRateSchema = new mongoose.Schema({
   shipper:   { type: String },           // e.g. "WALKIN 20260525"
   network:   { type: String },           // SELF | ARA | DHL | UPS | FED
   service:   { type: String, required: true, index: true }, // e.g. "EX DEL AUS DIRECT"
-  type:      { type: String, enum: ['S', 'B'], required: true }, // S=slab, B=per/kg
+  type:      { type: String, enum: ['S', 'B', 'D'], required: true }, // S=slab, B=per/kg, D=duty
   minWt:     { type: Number, required: true },
   maxWt:     { type: Number, required: true },
   zones:     { type: Map, of: Number },  // { "1": 785, "2": 1025 }

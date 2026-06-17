@@ -18,7 +18,7 @@ import ZipZone from "./models/ZipZone.js";
 import UploadLog from "./models/UploadLog.js";
 
 const getTenantModels = (dbName) => {
-  if (!dbName || dbName === "m5clogs") {
+  if (!dbName || dbName === "manvi") {
     return { Message, Task, Admin, SiteSettings, UploadLog, ZipZone, WalkinRate };
   }
   const tenantDb = mongoose.connection.useDb(dbName, { useCache: true });
@@ -585,6 +585,8 @@ fastify.get("/rates/services", async (request, reply) => {
 // totalPrice === basePrice (the rate from the sheet, rounded to whole rupees).
 // ---------------------------------------------------------------------------
 fastify.get("/rates/quote", async (request, reply) => {
+  const dbName = request.headers["x-database"];
+  const { ZipZone, WalkinRate } = getTenantModels(dbName);
   try {
     const actualWt = parseFloat(request.query.actualWt) || 0;
     const length = parseFloat(request.query.length) || 0;

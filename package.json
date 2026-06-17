@@ -15,12 +15,15 @@
   "dependencies": {
     "@fastify/compress": "^8.3.1",
     "@fastify/cors": "^11.2.0",
+    "@fastify/multipart": "^10.0.0",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
     "fastify-socket.io": "^5.1.0",
     "mongoose": "^9.6.2",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "uuid": "^14.0.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

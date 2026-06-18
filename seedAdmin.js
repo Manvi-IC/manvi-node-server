@@ -25,7 +25,7 @@ const seedAdmin = async () => {
     
     const admin = new Admin({
       username: 'admin',
-      password: hashedPassword
+      passwordHash: hashedPassword
     });
 
     await admin.save();

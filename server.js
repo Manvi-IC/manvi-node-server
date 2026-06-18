@@ -18,10 +18,12 @@ import ZipZone from "./models/ZipZone.js";
 import UploadLog from "./models/UploadLog.js";
 
 const getTenantModels = (dbName) => {
-  if (!dbName || dbName === "manvi") {
+  const defaultDbName = mongoose.connection.name || "manvi";
+  const targetDb = dbName || defaultDbName;
+  if (targetDb === defaultDbName) {
     return { Message, Task, Admin, SiteSettings, UploadLog, ZipZone, WalkinRate };
   }
-  const tenantDb = mongoose.connection.useDb(dbName, { useCache: true });
+  const tenantDb = mongoose.connection.useDb(targetDb, { useCache: true });
   return {
     Message: tenantDb.models.Message || tenantDb.model("Message", Message.schema),
     Task: tenantDb.models.Task || tenantDb.model("Task", Task.schema),
@@ -588,7 +590,12 @@ fastify.get("/rates/services", async (request, reply) => {
 // ---------------------------------------------------------------------------
 fastify.get("/rates/quote", async (request, reply) => {
   const dbName = request.headers["x-database"];
+  console.log(`[Quote Request] Header x-database: "${dbName}"`);
+  
   const { ZipZone, WalkinRate } = getTenantModels(dbName);
+  const activeDbName = mongoose.connection.name;
+  console.log(`[Quote Request] Using Mongoose connection database: "${activeDbName}"`);
+
   try {
     const actualWt = parseFloat(request.query.actualWt) || 0;
     const length = parseFloat(request.query.length) || 0;
@@ -604,7 +611,10 @@ fastify.get("/rates/quote", async (request, reply) => {
       .trim()
       .toUpperCase();
 
+    console.log(`[Quote Request] Query params - country: "${country}", actualWt: ${actualWt}, zipcode: "${zipcode}", zoningCountry: "${zoningCountry}"`);
+
     if (!actualWt || !country) {
+      console.warn("[Quote Request] Missing required actualWt or country");
       return reply
         .status(400)
         .send({ success: false, message: "actualWt and country are required" });
@@ -613,9 +623,11 @@ fastify.get("/rates/quote", async (request, reply) => {
     const volWt =
       length && breadth && height ? (length * breadth * height) / 5000 : 0;
     const chargeableWt = Math.ceil(Math.max(actualWt, volWt));
+    console.log(`[Quote Request] Calculated volWt: ${volWt}, chargeableWt: ${chargeableWt}`);
 
     const ZIPCODE_COUNTRIES = ["AUSTRALIA", "CANADA"];
     if (ZIPCODE_COUNTRIES.includes(country) && !zipcode) {
+      console.warn(`[Quote Request] Missing zipcode for zipcode-required country: ${country}`);
       return reply
         .status(400)
         .send({
@@ -626,11 +638,13 @@ fastify.get("/rates/quote", async (request, reply) => {
 
     const serviceList = SERVICE_DESTINATION_MAP[country];
     if (!serviceList) {
+      console.warn(`[Quote Request] Unknown destination country: "${country}"`);
       return reply
         .status(400)
         .send({ success: false, message: `Unknown destination: ${country}` });
     }
 
+    console.log(`[Quote Request] Found ${serviceList.length} services mapped for destination ${country}`);
     const results = [];
 
     for (const svc of serviceList) {
@@ -639,6 +653,7 @@ fastify.get("/rates/quote", async (request, reply) => {
 
         if (svc.zone) {
           zone = svc.zone;
+          console.log(`[Quote Request] Service "${svc.service}" hardcoded zone: ${zone}`);
         } else if (svc.zipBased) {
           const cleanZip = zipcode.replace(/\s+/g, "");
           let zoneDoc = null;
@@ -653,28 +668,45 @@ fastify.get("/rates/quote", async (request, reply) => {
               service: svc.service,
               zipcode: tryZip,
             }).lean();
-            if (zoneDoc) break;
+            if (zoneDoc) {
+              console.log(`[Quote Request] Service "${svc.service}" zip lookup match for "${tryZip}": Zone ${zoneDoc.zone}`);
+              break;
+            }
           }
-          if (!zoneDoc) continue;
+          if (!zoneDoc) {
+            console.log(`[Quote Request] Service "${svc.service}" zip lookup failed for "${cleanZip}"`);
+            continue;
+          }
           zone = String(zoneDoc.zone);
         } else if (svc.zoningCountry) {
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
             zipcode: svc.zoningCountry,
           }).lean();
-          if (!zoneDoc) continue;
+          if (!zoneDoc) {
+            console.log(`[Quote Request] Service "${svc.service}" zoningCountry lookup failed for "${svc.zoningCountry}"`);
+            continue;
+          }
           zone = String(zoneDoc.zone);
+          console.log(`[Quote Request] Service "${svc.service}" zoningCountry "${svc.zoningCountry}" resolved to Zone ${zone}`);
         } else if (svc.zoningFromInput) {
           const lookup = zoningCountry || country;
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
             zipcode: lookup,
           }).lean();
-          if (!zoneDoc) continue;
+          if (!zoneDoc) {
+            console.log(`[Quote Request] Service "${svc.service}" zoningFromInput lookup failed for "${lookup}"`);
+            continue;
+          }
           zone = String(zoneDoc.zone);
+          console.log(`[Quote Request] Service "${svc.service}" zoningFromInput "${lookup}" resolved to Zone ${zone}`);
         }
 
-        if (!zone) continue;
+        if (!zone) {
+          console.log(`[Quote Request] Service "${svc.service}" zone could not be resolved`);
+          continue;
+        }
 
         const [rateDocS, rateDocB] = await Promise.all([
           WalkinRate.findOne({
@@ -691,18 +723,23 @@ fastify.get("/rates/quote", async (request, reply) => {
           }).lean(),
         ]);
 
+        console.log(`[Quote Request] Service "${svc.service}" rates query results - Slab doc: ${!!rateDocS}, Per-Kg doc: ${!!rateDocB}`);
+
         for (const rd of [rateDocS, rateDocB].filter(Boolean)) {
           const zoneMap =
             rd.zones instanceof Map ? Object.fromEntries(rd.zones) : rd.zones;
           const rawPrice = zoneMap?.[zone];
-          if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice))
+          if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) {
+            console.log(`[Quote Request] Service "${svc.service}" price not found in rate doc for Zone "${zone}"`);
             continue;
+          }
 
-          // Rates from the sheet are GST-inclusive — just round to whole rupees, no addition.
           const totalPrice =
             rd.type === "S"
               ? Math.round(rawPrice)
               : Math.round(rawPrice * chargeableWt);
+
+          console.log(`[Quote Request] Service "${svc.service}" (${rd.type}) resolved Price: ₹${totalPrice} (raw: ${rawPrice})`);
 
           results.push({
             service: svc.service,
@@ -718,13 +755,14 @@ fastify.get("/rates/quote", async (request, reply) => {
         }
       } catch (svcErr) {
         console.error(
-          `Quote error for service "${svc.service}":`,
+          `[Quote Request] Quote error for service "${svc.service}":`,
           svcErr.message,
         );
       }
     }
 
     results.sort((a, b) => a.totalPrice - b.totalPrice);
+    console.log(`[Quote Request] Successfully returning ${results.length} quotes`);
 
     return {
       success: true,
@@ -736,7 +774,7 @@ fastify.get("/rates/quote", async (request, reply) => {
       quotes: results,
     };
   } catch (error) {
-    console.error("Quote engine error:", error);
+    console.error("[Quote Request] Quote engine crash:", error);
     return reply.status(500).send({ success: false, message: error.message });
   }
 });

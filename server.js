@@ -46,6 +46,7 @@ const frontendUrl = process.env.FRONTEND_URL || "*";
 fastify.register(fastifyCors, {
   origin: frontendUrl === "*" ? true : [frontendUrl],
   methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-database"],
   credentials: true,
 });
 fastify.register(fastifyIO, {

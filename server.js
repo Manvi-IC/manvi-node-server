@@ -17,23 +17,7 @@ import WalkinRate from "./models/WalkinRate.js";
 import ZipZone from "./models/ZipZone.js";
 import UploadLog from "./models/UploadLog.js";
 
-const getTenantModels = (dbName) => {
-  const defaultDbName = mongoose.connection.name || "manvi";
-  const targetDb = dbName || defaultDbName;
-  if (targetDb === defaultDbName) {
-    return { Message, Task, Admin, SiteSettings, UploadLog, ZipZone, WalkinRate };
-  }
-  const tenantDb = mongoose.connection.useDb(targetDb, { useCache: true });
-  return {
-    Message: tenantDb.models.Message || tenantDb.model("Message", Message.schema),
-    Task: tenantDb.models.Task || tenantDb.model("Task", Task.schema),
-    Admin: tenantDb.models.Admin || tenantDb.model("Admin", Admin.schema),
-    SiteSettings: tenantDb.models.SiteSettings || tenantDb.model("SiteSettings", SiteSettings.schema),
-    UploadLog: tenantDb.models.UploadLog || tenantDb.model("UploadLog", UploadLog.schema),
-    ZipZone: tenantDb.models.ZipZone || tenantDb.model("ZipZone", ZipZone.schema),
-    WalkinRate: tenantDb.models.WalkinRate || tenantDb.model("WalkinRate", WalkinRate.schema),
-  };
-};
+
 
 dotenv.config();
 
@@ -44,10 +28,28 @@ if (!process.env.MONGODB_URI) {
 
 const fastify = Fastify({ logger: { level: process.env.LOG_LEVEL || "info" } });
 const frontendUrl = process.env.FRONTEND_URL || "*";
+const cleanFrontendUrl = frontendUrl.replace(/\/$/, "");
 
 fastify.register(fastifyCors, {
-  origin: frontendUrl === "*" ? true : [frontendUrl],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  origin: (origin, cb) => {
+    if (!origin) {
+      cb(null, true);
+      return;
+    }
+    const originClean = origin.replace(/\/$/, "");
+    if (
+      cleanFrontendUrl === "*" ||
+      originClean === cleanFrontendUrl ||
+      originClean === "https://manvi-website.vercel.app" ||
+      /https?:\/\/localhost(:\d+)?$/.test(originClean) ||
+      /https?:\/\/127\.0\.0\.1(:\d+)?$/.test(originClean)
+    ) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Not allowed by CORS"), false);
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-database"],
   credentials: true,
 });
@@ -64,13 +66,7 @@ fastify.get("/", async () => ({
 }));
 
 fastify.get("/site-settings", async (request, reply) => {
-  const dbName = request.headers["x-database"];
-  if (!dbName)
-    return reply
-      .status(400)
-      .send({ success: false, message: "x-database header is required" });
   try {
-    const { SiteSettings } = getTenantModels(dbName);
     let settings = await SiteSettings.findOne();
     if (!settings) settings = await SiteSettings.create({});
     return { success: true, data: settings };
@@ -82,13 +78,7 @@ fastify.get("/site-settings", async (request, reply) => {
 });
 
 fastify.put("/site-settings", async (request, reply) => {
-  const dbName = request.headers["x-database"];
-  if (!dbName)
-    return reply
-      .status(400)
-      .send({ success: false, message: "x-database header is required" });
   try {
-    const { SiteSettings } = getTenantModels(dbName);
     const updated = await SiteSettings.findOneAndUpdate({}, request.body, {
       new: true,
       upsert: true,
@@ -102,14 +92,8 @@ fastify.put("/site-settings", async (request, reply) => {
 });
 
 fastify.post("/admin/login", async (request, reply) => {
-  const dbName = request.headers["x-database"];
-  if (!dbName)
-    return reply
-      .status(400)
-      .send({ success: false, message: "x-database header is required" });
   try {
     const { username, password } = request.body;
-    const { Admin } = getTenantModels(dbName);
     const adminCount = await Admin.countDocuments();
     if (adminCount === 0) {
       const hash = await bcrypt.hash("password", 10);
@@ -133,7 +117,6 @@ fastify.post("/admin/login", async (request, reply) => {
 
 fastify.get("/chat/recent-users", async (request, reply) => {
   const { userId } = request.query;
-  const { Message } = getTenantModels(request.headers["x-database"]);
   try {
     const recentConversations = await Message.aggregate([
       { $match: { $or: [{ senderId: userId }, { receiverId: userId }] } },
@@ -158,7 +141,6 @@ fastify.get("/chat/recent-users", async (request, reply) => {
 
 fastify.get("/chat/unread-counts", async (request, reply) => {
   const { userId } = request.query;
-  const { Message } = getTenantModels(request.headers["x-database"]);
   try {
     const unreadCounts = await Message.aggregate([
       { $match: { receiverId: userId, read: false, type: "private" } },
@@ -177,7 +159,6 @@ fastify.get("/chat/unread-counts", async (request, reply) => {
 
 fastify.post("/chat/mark-read", async (request, reply) => {
   const { userId, senderId } = request.body;
-  const { Message } = getTenantModels(request.headers["x-database"]);
   try {
     await Message.updateMany(
       { receiverId: userId, senderId, read: false },
@@ -192,7 +173,6 @@ fastify.post("/chat/mark-read", async (request, reply) => {
 
 fastify.get("/chat/history", async (request, reply) => {
   const { user1, user2, type } = request.query;
-  const { Message } = getTenantModels(request.headers["x-database"]);
   try {
     if (type === "broadcast") {
       const messages = await Message.find({ type: "broadcast" })
@@ -219,7 +199,6 @@ fastify.get("/chat/history", async (request, reply) => {
 
 fastify.get("/tasks/unread-count", async (request, reply) => {
   const { userId } = request.query;
-  const { Task } = getTenantModels(request.headers["x-database"]);
   try {
     const count = await Task.countDocuments({
       "assignedTo.userId": userId,
@@ -235,7 +214,6 @@ fastify.get("/tasks/unread-count", async (request, reply) => {
 
 fastify.post("/tasks/trigger-update", async (request, reply) => {
   const { userId } = request.body;
-  const { Task } = getTenantModels(request.headers["x-database"]);
   try {
     const count = await Task.countDocuments({
       "assignedTo.userId": userId,
@@ -412,9 +390,6 @@ function estimateTat(service) {
 }
 
 fastify.post("/rates/upload", async (request, reply) => {
-  const dbName = request.headers['x-database'];
-  const { UploadLog, ZipZone, WalkinRate } = getTenantModels(dbName);
-
   try {
     const data = await request.file();
     if (!data)
@@ -534,9 +509,6 @@ fastify.post("/rates/upload", async (request, reply) => {
 });
 
 fastify.get("/rates/uploads", async (request, reply) => {
-  const dbName = request.headers['x-database'];
-  const { UploadLog } = getTenantModels(dbName);
-
   try {
     const logs = await UploadLog.find({})
       .sort({ createdAt: -1 })
@@ -549,9 +521,6 @@ fastify.get("/rates/uploads", async (request, reply) => {
 });
 
 fastify.get("/rates/services", async (request, reply) => {
-  const dbName = request.headers['x-database'];
-  const { WalkinRate, ZipZone } = getTenantModels(dbName);
-
   try {
     const rateServices = await WalkinRate.aggregate([
       {
@@ -589,10 +558,6 @@ fastify.get("/rates/services", async (request, reply) => {
 // totalPrice === basePrice (the rate from the sheet, rounded to whole rupees).
 // ---------------------------------------------------------------------------
 fastify.get("/rates/quote", async (request, reply) => {
-  const dbName = request.headers["x-database"];
-  console.log(`[Quote Request] Header x-database: "${dbName}"`);
-  
-  const { ZipZone, WalkinRate } = getTenantModels(dbName);
   const activeDbName = mongoose.connection.name;
   console.log(`[Quote Request] Using Mongoose connection database: "${activeDbName}"`);
 
@@ -824,10 +789,6 @@ const start = async () => {
       if (err) throw err;
       fastify.io.on("connection", (socket) => {
         console.log("Socket connected:", socket.id);
-        const dbName =
-          socket.handshake.headers["x-database"] ||
-          socket.handshake.auth?.database;
-        const { Message, Task } = getTenantModels(dbName);
 
         socket.on("join_chat", async (userId) => {
           if (socket.userId && socket.userId !== userId) {

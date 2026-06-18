@@ -579,6 +579,7 @@ fastify.get("/rates/services", async (request, reply) => {
   }
 });
 
+
 // ---------------------------------------------------------------------------
 // GET /rates/quote
 // Base rates from the sheet are GST-inclusive — no GST is added on top.

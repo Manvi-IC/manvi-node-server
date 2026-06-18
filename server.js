@@ -16,8 +16,28 @@ import SiteSettings from "./models/SiteSettings.js";
 import WalkinRate from "./models/WalkinRate.js";
 import ZipZone from "./models/ZipZone.js";
 import UploadLog from "./models/UploadLog.js";
-
-
+async function rawBulkInsert(model, docs) {
+  const chunkSize = 2000;
+  const now = new Date();
+  let inserted = 0;
+  let failed = 0;
+  for (let i = 0; i < docs.length; i += chunkSize) {
+    const chunk = docs.slice(i, i + chunkSize).map(d => ({
+      ...d,
+      createdAt: now,
+      updatedAt: now
+    }));
+    try {
+      const result = await model.collection.insertMany(chunk, { ordered: false });
+      inserted += result.insertedCount || 0;
+    } catch (bulkErr) {
+      const insertedThisChunk = bulkErr.result?.insertedCount || 0;
+      inserted += insertedThisChunk;
+      failed += (chunk.length - insertedThisChunk);
+    }
+  }
+  return { inserted, failed };
+}
 
 dotenv.config();
 
@@ -441,13 +461,9 @@ fastify.post("/rates/upload", async (request, reply) => {
           zipcode: { $not: /^\d/ },
         });
         const docs = rows.map((r) => ({ ...r, uploadId }));
-        try {
-          const result = await ZipZone.insertMany(docs, { ordered: false });
-          rowsInserted = result.length;
-        } catch (bulkErr) {
-          rowsInserted = bulkErr.result?.insertedCount || 0;
-          rowsFailed = rows.length - rowsInserted;
-        }
+        const res = await rawBulkInsert(ZipZone, docs);
+        rowsInserted = res.inserted;
+        rowsFailed = res.failed;
       } else if (fileType === "zipcodes") {
         const rows = parseZipCodes(workbook);
         const services = [...new Set(rows.map((r) => r.service))];
@@ -456,25 +472,17 @@ fastify.post("/rates/upload", async (request, reply) => {
           zipcode: { $regex: /^\d/ },
         });
         const docs = rows.map((r) => ({ ...r, uploadId }));
-        try {
-          const result = await ZipZone.insertMany(docs, { ordered: false });
-          rowsInserted = result.length;
-        } catch (bulkErr) {
-          rowsInserted = bulkErr.result?.insertedCount || 0;
-          rowsFailed = rows.length - rowsInserted;
-        }
+        const res = await rawBulkInsert(ZipZone, docs);
+        rowsInserted = res.inserted;
+        rowsFailed = res.failed;
       } else {
         const rows = parseWalkinRates(workbook);
         const services = [...new Set(rows.map((r) => r.service))];
         await WalkinRate.deleteMany({ service: { $in: services } });
         const docs = rows.map((r) => ({ ...r, uploadId }));
-        try {
-          const result = await WalkinRate.insertMany(docs, { ordered: false });
-          rowsInserted = result.length;
-        } catch (bulkErr) {
-          rowsInserted = bulkErr.result?.insertedCount || 0;
-          rowsFailed = rows.length - rowsInserted;
-        }
+        const res = await rawBulkInsert(WalkinRate, docs);
+        rowsInserted = res.inserted;
+        rowsFailed = res.failed;
       }
     } catch (parseErr) {
       errorMessage = parseErr.message;

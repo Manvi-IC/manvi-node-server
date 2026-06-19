@@ -21,6 +21,8 @@ import SiteSettings from "./models/SiteSettings.js";
 import WalkinRate from "./models/WalkinRate.js";
 import ZipZone from "./models/ZipZone.js";
 import UploadLog from "./models/UploadLog.js";
+import Blog from "./models/Blog.js";
+import { INITIAL_BLOG_POSTS } from "./seedBlogs.js";
 
 async function rawBulkInsert(model, docs) {
   const chunkSize = 2000;
@@ -871,6 +873,125 @@ fastify.get("/rates/countries", async (request, reply) => {
   }
 });
 
+// ============= BLOG CRUD OPERATIONS =============
+
+// Seed initial blogs
+async function seedBlogs() {
+  try {
+    const count = await Blog.countDocuments();
+    if (count === 0) {
+      console.log("🌱 Seeding initial blog posts...");
+      await Blog.insertMany(INITIAL_BLOG_POSTS);
+      console.log("🌱 Seeded initial blog posts successfully!");
+    }
+  } catch (error) {
+    console.error("🌱 Seeding blog posts error:", error.message);
+  }
+}
+
+// Get all blogs (public)
+fastify.get("/api/blogs", async (request, reply) => {
+  try {
+    const { category } = request.query;
+    const filter = category && category !== "all" ? { category } : {};
+    const blogs = await Blog.find(filter).sort({ createdAt: -1 });
+    return { success: true, data: blogs };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// Get single blog by slug (public)
+fastify.get("/api/blogs/:slug", async (request, reply) => {
+  try {
+    const blog = await Blog.findOne({ slug: request.params.slug });
+    if (!blog) {
+      return reply.status(404).send({ success: false, message: "Blog not found" });
+    }
+    return { success: true, data: blog };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// Get all blogs (admin)
+fastify.get("/admin/blogs", async (request, reply) => {
+  try {
+    const blogs = await Blog.find({}).sort({ createdAt: -1 });
+    return { success: true, data: blogs };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// Get single blog by ID (admin)
+fastify.get("/admin/blogs/:id", async (request, reply) => {
+  try {
+    const blog = await Blog.findById(request.params.id);
+    if (!blog) {
+      return reply.status(404).send({ success: false, message: "Blog not found" });
+    }
+    return { success: true, data: blog };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// Create blog (admin)
+fastify.post("/admin/blogs", async (request, reply) => {
+  try {
+    const blogData = request.body;
+    if (!blogData.slug && blogData.title) {
+      blogData.slug = blogData.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+    }
+    const blog = new Blog(blogData);
+    await blog.save();
+    return { success: true, data: blog, message: "Blog created successfully" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// Update blog (admin)
+fastify.put("/admin/blogs/:id", async (request, reply) => {
+  try {
+    const blogData = request.body;
+    if (!blogData.slug && blogData.title) {
+      blogData.slug = blogData.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+    }
+    const blog = await Blog.findByIdAndUpdate(
+      request.params.id,
+      { ...blogData, updatedAt: new Date() },
+      { new: true, runValidators: true }
+    );
+    if (!blog) {
+      return reply.status(404).send({ success: false, message: "Blog not found" });
+    }
+    return { success: true, data: blog, message: "Blog updated successfully" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// Delete blog (admin)
+fastify.delete("/admin/blogs/:id", async (request, reply) => {
+  try {
+    const blog = await Blog.findByIdAndDelete(request.params.id);
+    if (!blog) {
+      return reply.status(404).send({ success: false, message: "Blog not found" });
+    }
+    return { success: true, message: "Blog deleted successfully" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
 // ============= JOB CRUD OPERATIONS =============
 
 // Get all jobs (with optional filter for active only)
@@ -1498,6 +1619,53 @@ fastify.get("/admin/applications/stats", async (request, reply) => {
   }
 });
 
+// ============= IMAGE UPLOAD ENDPOINT =============
+fastify.post("/admin/upload-image", async (request, reply) => {
+  try {
+    const data = await request.file();
+    if (!data) {
+      return reply.status(400).send({ success: false, message: "No file uploaded" });
+    }
+
+    const chunks = [];
+    for await (const chunk of data.file) chunks.push(chunk);
+    const buffer = Buffer.concat(chunks);
+
+    let cloudinaryResult;
+    try {
+      cloudinaryResult = await new Promise((resolve, reject) => {
+        cloudinary.uploader.upload_stream(
+          {
+            folder: "manvi-blog-images",
+            resource_type: "image",
+            access_mode: "public",
+            invalidate: true,
+          },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        ).end(buffer);
+      });
+    } catch (cloudinaryError) {
+      console.error("Cloudinary upload error:", cloudinaryError);
+      return reply.status(500).send({
+        success: false,
+        message: "Failed to upload image to Cloudinary",
+      });
+    }
+
+    return {
+      success: true,
+      url: cloudinaryResult.secure_url,
+      message: "Image uploaded successfully",
+    };
+  } catch (error) {
+    console.error("Image upload endpoint error:", error);
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
 // ============= SERVER START =============
 
 const connectDB = async () => {
@@ -1514,6 +1682,7 @@ const connectDB = async () => {
 const start = async () => {
   try {
     await connectDB();
+    await seedBlogs();
     const port = process.env.PORT || 5000;
     await fastify.listen({ port, host: "0.0.0.0" });
     console.log(`Server listening on http://localhost:${port}`);

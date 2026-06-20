@@ -5,6 +5,7 @@ const siteSettingsSchema = new mongoose.Schema({
   offerTitle: { type: String, default: "Limited-Time Offer" },
   offerSubtitle: { type: String, default: "₹679/kg to USA — ends soon" },
   offerEndDate: { type: Date, default: new Date("2026-06-20T23:59:59") },
+  showOffer: { type: Boolean, default: true },
   countryServiceMapping: {
     type: [{
       country: String,

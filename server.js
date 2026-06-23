@@ -1760,6 +1760,45 @@ fastify.post("/quote-enquiries", async (request, reply) => {
 
     await enquiry.save();
 
+    // Send data to Zoho CRM Web-to-Lead
+    try {
+      const zohoData = new URLSearchParams();
+      // Hidden authentication tokens from your HTML
+      zohoData.append("xnQsjsdp", "2fad6954b8023f2fbc4bdc7e2dbc0549a65d76d011e243b729db9929cdf08ce1");
+      zohoData.append("zc_gad", "");
+      zohoData.append("xmIwtLD", "1a9629a986c6048e743fa215eca9f3fac90c7ae16024a68577844e1ff3d6ff263ea9a377fc6c5c394df6f32322f1ab2a");
+      zohoData.append("actionType", "TGVhZHM=");
+      zohoData.append("returnURL", "null");
+      
+      // Form fields mapped exactly as per your HTML
+      zohoData.append("Last Name", name || "Unknown");
+      if (email) zohoData.append("Email", email);
+      if (phone) zohoData.append("Phone", phone);
+      
+      // Designation mapped to Service
+      zohoData.append("Designation", service || "");
+      
+      // First Name mapped to Destination
+      zohoData.append("First Name", destination || "");
+      
+      // Website mapped to Chargeable weight
+      zohoData.append("Website", chargeableWt ? chargeableWt.toString() : "");
+      
+      // Company mapped to Amount (totalPrice) - required by Zoho usually
+      zohoData.append("Company", totalPrice ? totalPrice.toString() : "0");
+      
+      // Lead Source
+      zohoData.append("Lead Source", "Web Download");
+
+      await fetch("https://crm.zoho.in/crm/WebToLeadForm", {
+        method: "POST",
+        body: zohoData,
+      });
+      console.log("Successfully sent quote enquiry to Zoho Web-to-Lead.");
+    } catch (zohoError) {
+      console.error("Failed to send quote enquiry to Zoho CRM:", zohoError);
+    }
+
     return {
       success: true,
       message: "Enquiry submitted successfully",

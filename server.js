@@ -23,6 +23,7 @@ import ZipZone from "./models/ZipZone.js";
 import UploadLog from "./models/UploadLog.js";
 import Blog from "./models/Blog.js";
 import { INITIAL_BLOG_POSTS } from "./seedBlogs.js";
+import QuoteEnquiry from "./models/QuoteEnquiry.js";
 
 async function rawBulkInsert(model, docs) {
   const chunkSize = 2000;
@@ -906,7 +907,9 @@ fastify.get("/api/blogs/:slug", async (request, reply) => {
   try {
     const blog = await Blog.findOne({ slug: request.params.slug });
     if (!blog) {
-      return reply.status(404).send({ success: false, message: "Blog not found" });
+      return reply
+        .status(404)
+        .send({ success: false, message: "Blog not found" });
     }
     return { success: true, data: blog };
   } catch (error) {
@@ -929,7 +932,9 @@ fastify.get("/admin/blogs/:id", async (request, reply) => {
   try {
     const blog = await Blog.findById(request.params.id);
     if (!blog) {
-      return reply.status(404).send({ success: false, message: "Blog not found" });
+      return reply
+        .status(404)
+        .send({ success: false, message: "Blog not found" });
     }
     return { success: true, data: blog };
   } catch (error) {
@@ -968,10 +973,12 @@ fastify.put("/admin/blogs/:id", async (request, reply) => {
     const blog = await Blog.findByIdAndUpdate(
       request.params.id,
       { ...blogData, updatedAt: new Date() },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
     if (!blog) {
-      return reply.status(404).send({ success: false, message: "Blog not found" });
+      return reply
+        .status(404)
+        .send({ success: false, message: "Blog not found" });
     }
     return { success: true, data: blog, message: "Blog updated successfully" };
   } catch (error) {
@@ -984,7 +991,9 @@ fastify.delete("/admin/blogs/:id", async (request, reply) => {
   try {
     const blog = await Blog.findByIdAndDelete(request.params.id);
     if (!blog) {
-      return reply.status(404).send({ success: false, message: "Blog not found" });
+      return reply
+        .status(404)
+        .send({ success: false, message: "Blog not found" });
     }
     return { success: true, message: "Blog deleted successfully" };
   } catch (error) {
@@ -1130,11 +1139,13 @@ fastify.put("/admin/applications/:id", async (request, reply) => {
 // ============= RESUME DOWNLOAD ENDPOINT (FIXED) =============
 fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
   try {
-    const application = await JobApplication.findById(request.params.applicationId);
+    const application = await JobApplication.findById(
+      request.params.applicationId,
+    );
     if (!application) {
-      return reply.status(404).send({ 
-        success: false, 
-        message: "Application not found" 
+      return reply.status(404).send({
+        success: false,
+        message: "Application not found",
       });
     }
 
@@ -1143,109 +1154,127 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
     console.log(`📎 Public ID: ${application.resumePublicId}`);
 
     let fileBuffer = null;
-    const fileName = `${application.fullName.replace(/\s+/g, '_')}_Resume.pdf`;
+    const fileName = `${application.fullName.replace(/\s+/g, "_")}_Resume.pdf`;
 
     try {
       // Method 1: Try direct fetch with fl_attachment and raw flag
       console.log("🔄 Method 1: Direct fetch with fl_attachment...");
       const directUrl = `${application.resumeUrl}?fl_attachment=1&raw=1`;
-      
+
       const response = await fetch(directUrl, {
-        method: 'GET',
+        method: "GET",
         headers: {
-          'Accept': 'application/pdf, application/octet-stream, */*',
-          'User-Agent': 'Mozilla/5.0',
+          Accept: "application/pdf, application/octet-stream, */*",
+          "User-Agent": "Mozilla/5.0",
         },
       });
 
       if (response.ok) {
         const arrayBuffer = await response.arrayBuffer();
         fileBuffer = Buffer.from(arrayBuffer);
-        console.log(`✅ Direct fetch successful, size: ${fileBuffer.length} bytes`);
+        console.log(
+          `✅ Direct fetch successful, size: ${fileBuffer.length} bytes`,
+        );
       } else {
         console.log(`⚠️ Direct fetch failed with status: ${response.status}`);
-        
+
         // Method 2: Try using Cloudinary API with signed URL
         console.log("🔄 Method 2: Trying Cloudinary API with signed URL...");
-        
+
         const timestamp = Math.floor(Date.now() / 1000) + 300;
         const publicId = application.resumePublicId;
-        
+
         // Generate signature
         const signatureString = `public_id=${publicId}&timestamp=${timestamp}`;
         const signature = crypto
-          .createHmac('sha256', process.env.CLOUDINARY_API_SECRET)
+          .createHmac("sha256", process.env.CLOUDINARY_API_SECRET)
           .update(signatureString)
-          .digest('hex');
+          .digest("hex");
 
         const signedUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/raw/upload/${publicId}?timestamp=${timestamp}&signature=${signature}&api_key=${process.env.CLOUDINARY_API_KEY}&fl_attachment=1`;
-        
+
         const signedResponse = await fetch(signedUrl, {
-          method: 'GET',
+          method: "GET",
           headers: {
-            'Accept': 'application/pdf, application/octet-stream, */*',
-            'User-Agent': 'Mozilla/5.0',
+            Accept: "application/pdf, application/octet-stream, */*",
+            "User-Agent": "Mozilla/5.0",
           },
         });
 
         if (signedResponse.ok) {
           const arrayBuffer = await signedResponse.arrayBuffer();
           fileBuffer = Buffer.from(arrayBuffer);
-          console.log(`✅ Signed URL fetch successful, size: ${fileBuffer.length} bytes`);
+          console.log(
+            `✅ Signed URL fetch successful, size: ${fileBuffer.length} bytes`,
+          );
         } else {
-          console.log(`⚠️ Signed URL fetch failed with status: ${signedResponse.status}`);
-          
+          console.log(
+            `⚠️ Signed URL fetch failed with status: ${signedResponse.status}`,
+          );
+
           // Method 3: Try Cloudinary API resource endpoint
-          console.log("🔄 Method 3: Trying Cloudinary API resource endpoint...");
-          
+          console.log(
+            "🔄 Method 3: Trying Cloudinary API resource endpoint...",
+          );
+
           const apiUrl = `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/resources/raw/upload/${publicId}`;
-          const authString = Buffer.from(`${process.env.CLOUDINARY_API_KEY}:${process.env.CLOUDINARY_API_SECRET}`).toString('base64');
-          
+          const authString = Buffer.from(
+            `${process.env.CLOUDINARY_API_KEY}:${process.env.CLOUDINARY_API_SECRET}`,
+          ).toString("base64");
+
           const apiResponse = await fetch(apiUrl, {
-            method: 'GET',
+            method: "GET",
             headers: {
-              'Authorization': `Basic ${authString}`,
-              'Accept': 'application/json',
+              Authorization: `Basic ${authString}`,
+              Accept: "application/json",
             },
           });
 
           if (apiResponse.ok) {
             const resourceData = await apiResponse.json();
             console.log(`📎 Resource found: ${resourceData.secure_url}`);
-            
+
             // Download using the secure_url from API
             const downloadResponse = await fetch(resourceData.secure_url, {
-              method: 'GET',
+              method: "GET",
               headers: {
-                'Accept': 'application/pdf, application/octet-stream, */*',
-                'User-Agent': 'Mozilla/5.0',
+                Accept: "application/pdf, application/octet-stream, */*",
+                "User-Agent": "Mozilla/5.0",
               },
             });
 
             if (downloadResponse.ok) {
               const arrayBuffer = await downloadResponse.arrayBuffer();
               fileBuffer = Buffer.from(arrayBuffer);
-              console.log(`✅ API download successful, size: ${fileBuffer.length} bytes`);
+              console.log(
+                `✅ API download successful, size: ${fileBuffer.length} bytes`,
+              );
             } else {
-              throw new Error(`API download failed: ${downloadResponse.status}`);
+              throw new Error(
+                `API download failed: ${downloadResponse.status}`,
+              );
             }
           } else {
             // Method 4: Last resort - try the original URL
             console.log("🔄 Method 4: Last resort - trying original URL...");
             const lastResponse = await fetch(application.resumeUrl, {
-              method: 'GET',
+              method: "GET",
               headers: {
-                'Accept': 'application/pdf, application/octet-stream, */*',
-                'User-Agent': 'Mozilla/5.0',
+                Accept: "application/pdf, application/octet-stream, */*",
+                "User-Agent": "Mozilla/5.0",
               },
             });
 
             if (lastResponse.ok) {
               const arrayBuffer = await lastResponse.arrayBuffer();
               fileBuffer = Buffer.from(arrayBuffer);
-              console.log(`✅ Last resort successful, size: ${fileBuffer.length} bytes`);
+              console.log(
+                `✅ Last resort successful, size: ${fileBuffer.length} bytes`,
+              );
             } else {
-              throw new Error(`All methods failed. Last status: ${lastResponse.status}`);
+              throw new Error(
+                `All methods failed. Last status: ${lastResponse.status}`,
+              );
             }
           }
         }
@@ -1263,20 +1292,19 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
     console.log(`✅ First 4 bytes: ${fileBuffer.slice(0, 4).toString()}`);
 
     // Set proper headers for download
-    reply.header('Content-Type', 'application/pdf');
-    reply.header('Content-Disposition', `attachment; filename="${fileName}"`);
-    reply.header('Content-Length', fileBuffer.length);
-    reply.header('Cache-Control', 'no-cache, no-store, must-revalidate');
-    reply.header('Pragma', 'no-cache');
-    reply.header('Expires', '0');
-    
+    reply.header("Content-Type", "application/pdf");
+    reply.header("Content-Disposition", `attachment; filename="${fileName}"`);
+    reply.header("Content-Length", fileBuffer.length);
+    reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+    reply.header("Pragma", "no-cache");
+    reply.header("Expires", "0");
+
     return reply.send(fileBuffer);
-    
   } catch (error) {
     console.error("❌ Resume download error:", error);
-    return reply.status(500).send({ 
-      success: false, 
-      message: error.message || "Failed to download resume. Please try again." 
+    return reply.status(500).send({
+      success: false,
+      message: error.message || "Failed to download resume. Please try again.",
     });
   }
 });
@@ -1624,7 +1652,9 @@ fastify.post("/admin/upload-image", async (request, reply) => {
   try {
     const data = await request.file();
     if (!data) {
-      return reply.status(400).send({ success: false, message: "No file uploaded" });
+      return reply
+        .status(400)
+        .send({ success: false, message: "No file uploaded" });
     }
 
     const chunks = [];
@@ -1634,18 +1664,20 @@ fastify.post("/admin/upload-image", async (request, reply) => {
     let cloudinaryResult;
     try {
       cloudinaryResult = await new Promise((resolve, reject) => {
-        cloudinary.uploader.upload_stream(
-          {
-            folder: "manvi-blog-images",
-            resource_type: "image",
-            access_mode: "public",
-            invalidate: true,
-          },
-          (error, result) => {
-            if (error) reject(error);
-            else resolve(result);
-          }
-        ).end(buffer);
+        cloudinary.uploader
+          .upload_stream(
+            {
+              folder: "manvi-blog-images",
+              resource_type: "image",
+              access_mode: "public",
+              invalidate: true,
+            },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result);
+            },
+          )
+          .end(buffer);
       });
     } catch (cloudinaryError) {
       console.error("Cloudinary upload error:", cloudinaryError);
@@ -1662,6 +1694,165 @@ fastify.post("/admin/upload-image", async (request, reply) => {
     };
   } catch (error) {
     console.error("Image upload endpoint error:", error);
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+// ============================================================
+// ADD THIS IMPORT at the top of server.js with other imports:
+// import QuoteEnquiry from "./models/QuoteEnquiry.js";
+// ============================================================
+
+// ============================================================
+// QUOTE ENQUIRY ROUTES  — paste these anywhere after your
+// existing /rates/quote route
+// ============================================================
+
+// POST /quote-enquiries  — submitted from the Get Quote page
+fastify.post("/quote-enquiries", async (request, reply) => {
+  try {
+    const {
+      name,
+      phone,
+      email,
+      destination,
+      zoningCountry,
+      zipcode,
+      actualWt,
+      volWt,
+      chargeableWt,
+      length,
+      breadth,
+      height,
+      service,
+      network,
+      zone,
+      rateType,
+      totalPrice,
+      tat,
+    } = request.body;
+
+    if (!name || !phone || !email || !destination || !service) {
+      return reply
+        .status(400)
+        .send({ success: false, message: "Missing required fields" });
+    }
+
+    const enquiry = new QuoteEnquiry({
+      name,
+      phone,
+      email,
+      destination,
+      zoningCountry: zoningCountry || "",
+      zipcode: zipcode || "",
+      actualWt: parseFloat(actualWt) || 0,
+      volWt: parseFloat(volWt) || 0,
+      chargeableWt: parseFloat(chargeableWt) || 0,
+      length: parseFloat(length) || 0,
+      breadth: parseFloat(breadth) || 0,
+      height: parseFloat(height) || 0,
+      service,
+      network: network || "",
+      zone: zone || "",
+      rateType: rateType || "",
+      totalPrice: parseFloat(totalPrice) || 0,
+      tat: tat || "",
+    });
+
+    await enquiry.save();
+
+    return {
+      success: true,
+      message: "Enquiry submitted successfully",
+      id: enquiry._id,
+    };
+  } catch (error) {
+    console.error("Quote enquiry submission error:", error);
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// GET /admin/quote-enquiries  — list all, newest first
+fastify.get("/admin/quote-enquiries", async (request, reply) => {
+  try {
+    const { status, page = 1, limit = 50 } = request.query;
+    const filter = status && status !== "all" ? { status } : {};
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [enquiries, total] = await Promise.all([
+      QuoteEnquiry.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      QuoteEnquiry.countDocuments(filter),
+    ]);
+
+    return { success: true, data: enquiries, total, page: parseInt(page) };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// GET /admin/quote-enquiries/stats  — counts by status
+fastify.get("/admin/quote-enquiries/stats", async (request, reply) => {
+  try {
+    const [total, newCount, contacted, converted, closed] = await Promise.all([
+      QuoteEnquiry.countDocuments(),
+      QuoteEnquiry.countDocuments({ status: "new" }),
+      QuoteEnquiry.countDocuments({ status: "contacted" }),
+      QuoteEnquiry.countDocuments({ status: "converted" }),
+      QuoteEnquiry.countDocuments({ status: "closed" }),
+    ]);
+    return {
+      success: true,
+      data: { total, new: newCount, contacted, converted, closed },
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// GET /admin/quote-enquiries/:id  — single enquiry
+fastify.get("/admin/quote-enquiries/:id", async (request, reply) => {
+  try {
+    const enquiry = await QuoteEnquiry.findById(request.params.id).lean();
+    if (!enquiry)
+      return reply.status(404).send({ success: false, message: "Not found" });
+    return { success: true, data: enquiry };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// PUT /admin/quote-enquiries/:id  — update status / notes
+fastify.put("/admin/quote-enquiries/:id", async (request, reply) => {
+  try {
+    const { status, notes } = request.body;
+    const enquiry = await QuoteEnquiry.findByIdAndUpdate(
+      request.params.id,
+      {
+        ...(status && { status }),
+        ...(notes !== undefined && { notes }),
+        updatedAt: new Date(),
+      },
+      { new: true },
+    ).lean();
+    if (!enquiry)
+      return reply.status(404).send({ success: false, message: "Not found" });
+    return { success: true, data: enquiry };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// DELETE /admin/quote-enquiries/:id
+fastify.delete("/admin/quote-enquiries/:id", async (request, reply) => {
+  try {
+    const enquiry = await QuoteEnquiry.findByIdAndDelete(request.params.id);
+    if (!enquiry)
+      return reply.status(404).send({ success: false, message: "Not found" });
+    return { success: true, message: "Deleted successfully" };
+  } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });

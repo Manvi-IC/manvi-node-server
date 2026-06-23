@@ -1771,21 +1771,30 @@ fastify.post("/quote-enquiries", async (request, reply) => {
       zohoData.append("returnURL", "null");
       
       // Form fields mapped exactly as per your HTML
-      zohoData.append("Last Name", name || "Unknown");
+      // Split Name into First and Last Name so Zoho displays it correctly
+      const nameParts = (name || "Unknown").trim().split(" ");
+      const lastName = nameParts.length > 1 ? nameParts.pop() : nameParts[0];
+      const firstName = nameParts.length > 1 ? nameParts.join(" ") : "";
+      
+      zohoData.append("Last Name", lastName);
+      if (firstName) zohoData.append("First Name", firstName);
+
       if (email) zohoData.append("Email", email);
       if (phone) zohoData.append("Phone", phone);
       
       // Designation mapped to Service
       zohoData.append("Designation", service || "");
       
-      // First Name mapped to Destination
-      zohoData.append("First Name", destination || "");
-      
       // Website mapped to Chargeable weight
       zohoData.append("Website", chargeableWt ? chargeableWt.toString() : "");
       
       // Company mapped to Amount (totalPrice) - required by Zoho usually
       zohoData.append("Company", totalPrice ? totalPrice.toString() : "0");
+      
+      // Since "First Name" was manually renamed to Destination in the HTML, it caused the Lead's Name to look weird.
+      // We'll put Destination and other package details into the Description field instead!
+      const desc = `Destination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
+      zohoData.append("Description", desc);
       
       // Lead Source
       zohoData.append("Lead Source", "Web Download");

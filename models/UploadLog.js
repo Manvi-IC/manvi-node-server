@@ -11,4 +11,6 @@ const uploadLogSchema = new mongoose.Schema({
   fileSize:      { type: Number }, // bytes
 }, { timestamps: true });
 
+uploadLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 }); // 30 days
+
 export default mongoose.model('UploadLog', uploadLogSchema);

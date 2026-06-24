@@ -13,4 +13,7 @@ const JobSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
+JobSchema.index({ createdAt: -1 });
+JobSchema.index({ isActive: 1, createdAt: -1 });
+
 export default mongoose.model("Job", JobSchema);

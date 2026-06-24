@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import fastifyCors from "@fastify/cors";
-import fastifyIO from "fastify-socket.io";
+import fastifyRateLimit from "@fastify/rate-limit";
 import fastifyCompress from "@fastify/compress";
 import fastifyMultipart from "@fastify/multipart";
 import mongoose from "mongoose";
@@ -14,8 +14,6 @@ import { v2 as cloudinary } from "cloudinary";
 import nodemailer from "nodemailer";
 import crypto from "crypto";
 
-import Message from "./models/Message.js";
-import Task from "./models/Task.js";
 import Admin from "./models/Admin.js";
 import SiteSettings from "./models/SiteSettings.js";
 import WalkinRate from "./models/WalkinRate.js";
@@ -24,6 +22,22 @@ import UploadLog from "./models/UploadLog.js";
 import Blog from "./models/Blog.js";
 import { INITIAL_BLOG_POSTS } from "./seedBlogs.js";
 import QuoteEnquiry from "./models/QuoteEnquiry.js";
+
+// Simple in-memory cache utility to reduce database load
+const apiCache = {
+  data: {},
+  get: function(key) {
+    if(this.data[key] && this.data[key].expiry > Date.now()) return this.data[key].value;
+    return null;
+  },
+  set: function(key, value, ttlSeconds) {
+    this.data[key] = { value, expiry: Date.now() + (ttlSeconds * 1000) };
+  },
+  clear: function(key) {
+    if(key) delete this.data[key];
+    else this.data = {};
+  }
+};
 
 async function rawBulkInsert(model, docs) {
   const chunkSize = 2000;
@@ -94,7 +108,11 @@ transporter.verify((error, success) => {
   }
 });
 
-const fastify = Fastify({ logger: { level: process.env.LOG_LEVEL || "info" } });
+const fastify = Fastify({ 
+  logger: process.env.NODE_ENV === "production" 
+    ? { level: "error" } // Disable verbose request logs in production, keep only errors
+    : { level: process.env.LOG_LEVEL || "info" } 
+});
 const frontendUrl = process.env.FRONTEND_URL || "*";
 const cleanFrontendUrl = frontendUrl.replace(/\/$/, "");
 
@@ -122,13 +140,21 @@ fastify.register(fastifyCors, {
   credentials: true,
 });
 
-fastify.register(fastifyIO, {
-  cors: { origin: frontendUrl, methods: ["GET", "POST"], credentials: true },
-  transports: ["websocket"],
-});
-
 fastify.register(fastifyCompress, { threshold: 1024 });
 fastify.register(fastifyMultipart, { limits: { fileSize: 20 * 1024 * 1024 } });
+
+// Generous Global Rate Limit to prevent extreme spam/DDoS while not annoying real users
+fastify.register(fastifyRateLimit, {
+  max: 1000,
+  timeWindow: '1 minute',
+  errorResponseBuilder: function (request, context) {
+    return {
+      statusCode: 429,
+      error: 'Too Many Requests',
+      message: `I only allow ${context.max} requests per minute to this Website. Try again soon.`
+    }
+  }
+});
 
 // ============= EMAIL HELPER FUNCTION =============
 async function sendEmail(to, subject, html, from = process.env.SMTP_USER) {
@@ -158,8 +184,11 @@ fastify.get("/", async () => ({
 
 fastify.get("/site-settings", async (request, reply) => {
   try {
-    let settings = await SiteSettings.findOne();
+    const cached = apiCache.get("site-settings");
+    if (cached) return { success: true, data: cached };
+    let settings = await SiteSettings.findOne().lean();
     if (!settings) settings = await SiteSettings.create({});
+    apiCache.set("site-settings", settings, 3600); // cache for 1 hour
     return { success: true, data: settings };
   } catch {
     return reply
@@ -174,6 +203,7 @@ fastify.put("/site-settings", async (request, reply) => {
       new: true,
       upsert: true,
     });
+    apiCache.clear("site-settings");
     return { success: true, data: updated };
   } catch {
     return reply
@@ -182,7 +212,14 @@ fastify.put("/site-settings", async (request, reply) => {
   }
 });
 
-fastify.post("/admin/login", async (request, reply) => {
+fastify.post("/admin/login", {
+  config: {
+    rateLimit: {
+      max: 50,
+      timeWindow: '1 minute'
+    }
+  }
+}, async (request, reply) => {
   try {
     const { username, password } = request.body;
     const adminCount = await Admin.countDocuments();
@@ -206,118 +243,6 @@ fastify.post("/admin/login", async (request, reply) => {
   }
 });
 
-fastify.get("/chat/recent-users", async (request, reply) => {
-  const { userId } = request.query;
-  try {
-    const recentConversations = await Message.aggregate([
-      { $match: { $or: [{ senderId: userId }, { receiverId: userId }] } },
-      { $sort: { timestamp: -1 } },
-      {
-        $group: {
-          _id: {
-            $cond: [{ $eq: ["$senderId", userId] }, "$receiverId", "$senderId"],
-          },
-          lastMessage: { $first: "$text" },
-          lastTimestamp: { $first: "$timestamp" },
-        },
-      },
-      { $sort: { lastTimestamp: -1 } },
-    ]);
-    return { success: true, data: recentConversations };
-  } catch (error) {
-    reply.status(500);
-    return { success: false, message: error.message };
-  }
-});
-
-fastify.get("/chat/unread-counts", async (request, reply) => {
-  const { userId } = request.query;
-  try {
-    const unreadCounts = await Message.aggregate([
-      { $match: { receiverId: userId, read: false, type: "private" } },
-      { $group: { _id: "$senderId", count: { $sum: 1 } } },
-    ]);
-    const counts = {};
-    unreadCounts.forEach((item) => {
-      if (item._id) counts[item._id] = item.count;
-    });
-    return { success: true, data: counts };
-  } catch (error) {
-    reply.status(500);
-    return { success: false, message: error.message };
-  }
-});
-
-fastify.post("/chat/mark-read", async (request, reply) => {
-  const { userId, senderId } = request.body;
-  try {
-    await Message.updateMany(
-      { receiverId: userId, senderId, read: false },
-      { $set: { read: true } },
-    );
-    return { success: true };
-  } catch (error) {
-    reply.status(500);
-    return { success: false, message: error.message };
-  }
-});
-
-fastify.get("/chat/history", async (request, reply) => {
-  const { user1, user2, type } = request.query;
-  try {
-    if (type === "broadcast") {
-      const messages = await Message.find({ type: "broadcast" })
-        .sort({ timestamp: 1 })
-        .limit(100)
-        .lean();
-      return { success: true, data: messages };
-    }
-    const messages = await Message.find({
-      $or: [
-        { senderId: user1, receiverId: user2 },
-        { senderId: user2, receiverId: user1 },
-      ],
-    })
-      .sort({ timestamp: 1 })
-      .limit(100)
-      .lean();
-    return { success: true, data: messages };
-  } catch (error) {
-    reply.status(500);
-    return { success: false, message: error.message };
-  }
-});
-
-fastify.get("/tasks/unread-count", async (request, reply) => {
-  const { userId } = request.query;
-  try {
-    const count = await Task.countDocuments({
-      "assignedTo.userId": userId,
-      isRead: false,
-      status: { $ne: "completed" },
-    });
-    return { success: true, count };
-  } catch (error) {
-    reply.status(500);
-    return { success: false, message: error.message };
-  }
-});
-
-fastify.post("/tasks/trigger-update", async (request, reply) => {
-  const { userId } = request.body;
-  try {
-    const count = await Task.countDocuments({
-      "assignedTo.userId": userId,
-      isRead: false,
-      status: { $ne: "completed" },
-    });
-    fastify.io.to(userId).emit("task_unread_count", { count });
-    return { success: true, count };
-  } catch (error) {
-    reply.status(500);
-    return { success: false, message: error.message };
-  }
-});
 
 // ===========================================================================
 //  RATES SYSTEM
@@ -856,6 +781,9 @@ fastify.get("/rates/quote", async (request, reply) => {
 
 fastify.get("/rates/countries", async (request, reply) => {
   try {
+    const cached = apiCache.get("rates-countries");
+    if (cached) return { success: true, ...cached };
+
     const europeDpdCountries = await ZipZone.find(
       { service: "EX DEL EUROPE DPD" },
       { zipcode: 1, zone: 1, _id: 0 },
@@ -864,11 +792,13 @@ fastify.get("/rates/countries", async (request, reply) => {
       { service: "EX DEL BRANDED DHL NDOX" },
       { zipcode: 1, zone: 1, _id: 0 },
     ).lean();
-    return {
-      success: true,
+    
+    const data = {
       europe: europeDpdCountries.map((d) => d.zipcode).sort(),
       international: intlCountries.map((d) => d.zipcode).sort(),
     };
+    apiCache.set("rates-countries", data, 3600); // cache 1 hour
+    return { success: true, ...data };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
@@ -894,8 +824,15 @@ async function seedBlogs() {
 fastify.get("/api/blogs", async (request, reply) => {
   try {
     const { category } = request.query;
+    const cacheKey = `blogs_${category || "all"}`;
+    const cached = apiCache.get(cacheKey);
+    if (cached) return { success: true, data: cached };
+    
     const filter = category && category !== "all" ? { category } : {};
-    const blogs = await Blog.find(filter).sort({ createdAt: -1 });
+    // Database Optimization: Exclude massive 'content' string for lists
+    const blogs = await Blog.find(filter).select('-content').sort({ createdAt: -1 }).lean();
+    
+    apiCache.set(cacheKey, blogs, 1800); // 30 mins
     return { success: true, data: blogs };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -954,6 +891,7 @@ fastify.post("/admin/blogs", async (request, reply) => {
     }
     const blog = new Blog(blogData);
     await blog.save();
+    apiCache.clear(); // invalidate cache
     return { success: true, data: blog, message: "Blog created successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -980,6 +918,7 @@ fastify.put("/admin/blogs/:id", async (request, reply) => {
         .status(404)
         .send({ success: false, message: "Blog not found" });
     }
+    apiCache.clear(); // invalidate cache
     return { success: true, data: blog, message: "Blog updated successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -995,6 +934,7 @@ fastify.delete("/admin/blogs/:id", async (request, reply) => {
         .status(404)
         .send({ success: false, message: "Blog not found" });
     }
+    apiCache.clear(); // invalidate cache
     return { success: true, message: "Blog deleted successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -1671,6 +1611,8 @@ fastify.post("/admin/upload-image", async (request, reply) => {
               resource_type: "image",
               access_mode: "public",
               invalidate: true,
+              format: "auto",
+              quality: "auto",
             },
             (error, result) => {
               if (error) reject(error);
@@ -1708,7 +1650,14 @@ fastify.post("/admin/upload-image", async (request, reply) => {
 // ============================================================
 
 // POST /quote-enquiries  — submitted from the Get Quote page
-fastify.post("/quote-enquiries", async (request, reply) => {
+fastify.post("/quote-enquiries", {
+  config: {
+    rateLimit: {
+      max: 50,
+      timeWindow: '1 minute'
+    }
+  }
+}, async (request, reply) => {
   try {
     const {
       name,
@@ -1925,101 +1874,6 @@ const start = async () => {
     const port = process.env.PORT || 5000;
     await fastify.listen({ port, host: "0.0.0.0" });
     console.log(`Server listening on http://localhost:${port}`);
-
-    const userSockets = new Map();
-    const userStatuses = new Map();
-
-    fastify.ready((err) => {
-      if (err) throw err;
-      fastify.io.on("connection", (socket) => {
-        console.log("Socket connected:", socket.id);
-
-        socket.on("join_chat", async (userId) => {
-          if (socket.userId && socket.userId !== userId) {
-            const old = socket.userId;
-            if (userSockets.has(old)) {
-              userSockets.get(old).delete(socket.id);
-              if (userSockets.get(old).size === 0) {
-                userSockets.delete(old);
-                userStatuses.delete(old);
-                fastify.io.emit("status_update", {
-                  userId: old,
-                  status: "offline",
-                });
-              }
-            }
-          }
-          socket.join(userId);
-          socket.userId = userId;
-          if (!userSockets.has(userId)) userSockets.set(userId, new Set());
-          userSockets.get(userId).add(socket.id);
-          userStatuses.set(userId, "online");
-          fastify.io.emit("status_update", { userId, status: "online" });
-          socket.emit("all_statuses", Object.fromEntries(userStatuses));
-          try {
-            const count = await Task.countDocuments({
-              "assignedTo.userId": userId,
-              isRead: false,
-              status: { $ne: "completed" },
-            });
-            socket.emit("task_unread_count", { count });
-          } catch (err) {
-            console.error("Initial task count error:", err);
-          }
-        });
-
-        socket.on("set_status", ({ userId, status }) => {
-          if (userId && userSockets.has(userId)) {
-            userStatuses.set(userId, status);
-            fastify.io.emit("status_update", { userId, status });
-          }
-        });
-
-        socket.on("send_message", async (data) => {
-          try {
-            const newMessage = new Message({
-              senderId: data.senderId,
-              senderName: data.senderName,
-              receiverId: data.receiverId,
-              receiverName: data.receiverName,
-              text: data.text,
-              type: data.type || "private",
-              title: data.title,
-              priority: data.priority || "normal",
-            });
-            await newMessage.save();
-            if (data.type === "broadcast") {
-              fastify.io.emit("receive_message", newMessage);
-            } else {
-              fastify.io
-                .to(data.receiverId)
-                .to(data.senderId)
-                .emit("receive_message", newMessage);
-            }
-          } catch (error) {
-            console.error("Socket send_message error:", error);
-            socket.emit("send_message_error", {
-              senderId: data.senderId,
-              receiverId: data.receiverId,
-              text: data.text,
-              error: "Failed to send/save message",
-            });
-          }
-        });
-
-        socket.on("disconnect", () => {
-          const userId = socket.userId;
-          if (userId && userSockets.has(userId)) {
-            userSockets.get(userId).delete(socket.id);
-            if (userSockets.get(userId).size === 0) {
-              userSockets.delete(userId);
-              userStatuses.delete(userId);
-              fastify.io.emit("status_update", { userId, status: "offline" });
-            }
-          }
-        });
-      });
-    });
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

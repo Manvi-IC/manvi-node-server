@@ -4,7 +4,7 @@ import mongoose from "mongoose";
 const BlogBlockSchema = new mongoose.Schema({
   type: { 
     type: String, 
-    enum: ["paragraph", "subheading", "list", "callout", "image", "heading", "divider", "slideshow"], 
+    enum: ["paragraph", "subheading", "list", "callout", "image", "heading", "divider", "slideshow", "table"], 
     required: true 
   },
   text: { type: String },
@@ -18,7 +18,8 @@ const BlogBlockSchema = new mongoose.Schema({
     src: { type: String },
     alt: { type: String },
     caption: { type: String }
-  }]
+  }],
+  tableData: { type: [[String]] }
 });
 
 const BlogSchema = new mongoose.Schema({

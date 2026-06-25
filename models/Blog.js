@@ -34,6 +34,7 @@ const BlogSchema = new mongoose.Schema({
   featured: { type: Boolean, default: false },
   publishedDate: { type: String, required: true },
   bannerImage: { type: String, default: "" },
+  previewImage: { type: String, default: "" },
   author: {
     name: { type: String, default: "Manvi Logistics Team" },
     avatarInitials: { type: String, default: "ML" }

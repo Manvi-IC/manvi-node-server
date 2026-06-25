@@ -41,5 +41,8 @@ const BlogSchema = new mongoose.Schema({
   content: { type: [BlogBlockSchema], default: [] }
 }, { timestamps: true });
 
+BlogSchema.index({ createdAt: -1 });
+BlogSchema.index({ category: 1, createdAt: -1 });
+
 export default mongoose.model("Blog", BlogSchema);
 

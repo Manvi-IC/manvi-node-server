@@ -1622,8 +1622,6 @@ fastify.post("/admin/upload-image", async (request, reply) => {
               resource_type: "image",
               access_mode: "public",
               invalidate: true,
-              format: "auto",
-              quality: "auto",
             },
             (error, result) => {
               if (error) reject(error);

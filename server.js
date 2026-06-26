@@ -22,21 +22,23 @@ import UploadLog from "./models/UploadLog.js";
 import Blog from "./models/Blog.js";
 import { INITIAL_BLOG_POSTS } from "./seedBlogs.js";
 import QuoteEnquiry from "./models/QuoteEnquiry.js";
+import ServiceArea from "./models/ServiceArea.js";
 
 // Simple in-memory cache utility to reduce database load
 const apiCache = {
   data: {},
-  get: function(key) {
-    if(this.data[key] && this.data[key].expiry > Date.now()) return this.data[key].value;
+  get: function (key) {
+    if (this.data[key] && this.data[key].expiry > Date.now())
+      return this.data[key].value;
     return null;
   },
-  set: function(key, value, ttlSeconds) {
-    this.data[key] = { value, expiry: Date.now() + (ttlSeconds * 1000) };
+  set: function (key, value, ttlSeconds) {
+    this.data[key] = { value, expiry: Date.now() + ttlSeconds * 1000 };
   },
-  clear: function(key) {
-    if(key) delete this.data[key];
+  clear: function (key) {
+    if (key) delete this.data[key];
     else this.data = {};
-  }
+  },
 };
 
 async function rawBulkInsert(model, docs) {
@@ -108,10 +110,11 @@ transporter.verify((error, success) => {
   }
 });
 
-const fastify = Fastify({ 
-  logger: process.env.NODE_ENV === "production" 
-    ? { level: "error" } // Disable verbose request logs in production, keep only errors
-    : { level: process.env.LOG_LEVEL || "info" } 
+const fastify = Fastify({
+  logger:
+    process.env.NODE_ENV === "production"
+      ? { level: "error" } // Disable verbose request logs in production, keep only errors
+      : { level: process.env.LOG_LEVEL || "info" },
 });
 const frontendUrl = process.env.FRONTEND_URL || "*";
 const cleanFrontendUrl = frontendUrl.replace(/\/$/, "");
@@ -146,14 +149,14 @@ fastify.register(fastifyMultipart, { limits: { fileSize: 20 * 1024 * 1024 } });
 // Generous Global Rate Limit to prevent extreme spam/DDoS while not annoying real users
 fastify.register(fastifyRateLimit, {
   max: 1000,
-  timeWindow: '1 minute',
+  timeWindow: "1 minute",
   errorResponseBuilder: function (request, context) {
     return {
       statusCode: 429,
-      error: 'Too Many Requests',
-      message: `I only allow ${context.max} requests per minute to this Website. Try again soon.`
-    }
-  }
+      error: "Too Many Requests",
+      message: `I only allow ${context.max} requests per minute to this Website. Try again soon.`,
+    };
+  },
 });
 
 // ============= EMAIL HELPER FUNCTION =============
@@ -212,37 +215,42 @@ fastify.put("/site-settings", async (request, reply) => {
   }
 });
 
-fastify.post("/admin/login", {
-  config: {
-    rateLimit: {
-      max: 50,
-      timeWindow: '1 minute'
-    }
-  }
-}, async (request, reply) => {
-  try {
-    const { username, password } = request.body;
-    const adminCount = await Admin.countDocuments();
-    if (adminCount === 0) {
-      const hash = await bcrypt.hash("password", 10);
-      await Admin.create({ username: "admin", passwordHash: hash });
-    }
-    const admin = await Admin.findOne({ username });
-    if (!admin)
+fastify.post(
+  "/admin/login",
+  {
+    config: {
+      rateLimit: {
+        max: 50,
+        timeWindow: "1 minute",
+      },
+    },
+  },
+  async (request, reply) => {
+    try {
+      const { username, password } = request.body;
+      const adminCount = await Admin.countDocuments();
+      if (adminCount === 0) {
+        const hash = await bcrypt.hash("password", 10);
+        await Admin.create({ username: "admin", passwordHash: hash });
+      }
+      const admin = await Admin.findOne({ username });
+      if (!admin)
+        return reply
+          .status(401)
+          .send({ success: false, message: "Invalid credentials" });
+      const match = await bcrypt.compare(password, admin.passwordHash);
+      if (!match)
+        return reply
+          .status(401)
+          .send({ success: false, message: "Invalid credentials" });
+      return { success: true, message: "Login successful" };
+    } catch (error) {
       return reply
-        .status(401)
-        .send({ success: false, message: "Invalid credentials" });
-    const match = await bcrypt.compare(password, admin.passwordHash);
-    if (!match)
-      return reply
-        .status(401)
-        .send({ success: false, message: "Invalid credentials" });
-    return { success: true, message: "Login successful" };
-  } catch (error) {
-    return reply.status(500).send({ success: false, message: "Login failed" });
-  }
-});
-
+        .status(500)
+        .send({ success: false, message: "Login failed" });
+    }
+  },
+);
 
 // ===========================================================================
 //  RATES SYSTEM
@@ -792,7 +800,7 @@ fastify.get("/rates/countries", async (request, reply) => {
       { service: "EX DEL BRANDED DHL NDOX" },
       { zipcode: 1, zone: 1, _id: 0 },
     ).lean();
-    
+
     const data = {
       europe: europeDpdCountries.map((d) => d.zipcode).sort(),
       international: intlCountries.map((d) => d.zipcode).sort(),
@@ -827,11 +835,14 @@ fastify.get("/api/blogs", async (request, reply) => {
     const cacheKey = `blogs_${category || "all"}`;
     const cached = apiCache.get(cacheKey);
     if (cached) return { success: true, data: cached };
-    
+
     const filter = category && category !== "all" ? { category } : {};
     // Database Optimization: Exclude massive 'content' string for lists
-    const blogs = await Blog.find(filter).select('-content').sort({ createdAt: -1 }).lean();
-    
+    const blogs = await Blog.find(filter)
+      .select("-content")
+      .sort({ createdAt: -1 })
+      .lean();
+
     apiCache.set(cacheKey, blogs, 1800); // 30 mins
     return { success: true, data: blogs };
   } catch (error) {
@@ -1648,123 +1659,133 @@ fastify.post("/admin/upload-image", async (request, reply) => {
 // ============================================================
 
 // POST /quote-enquiries  — submitted from the Get Quote page
-fastify.post("/quote-enquiries", {
-  config: {
-    rateLimit: {
-      max: 50,
-      timeWindow: '1 minute'
-    }
-  }
-}, async (request, reply) => {
-  try {
-    const {
-      name,
-      phone,
-      email,
-      destination,
-      zoningCountry,
-      zipcode,
-      actualWt,
-      volWt,
-      chargeableWt,
-      length,
-      breadth,
-      height,
-      service,
-      network,
-      zone,
-      rateType,
-      totalPrice,
-      tat,
-    } = request.body;
-
-    if (!name || !phone || !email || !destination || !service) {
-      return reply
-        .status(400)
-        .send({ success: false, message: "Missing required fields" });
-    }
-
-    const enquiry = new QuoteEnquiry({
-      name,
-      phone,
-      email,
-      destination,
-      zoningCountry: zoningCountry || "",
-      zipcode: zipcode || "",
-      actualWt: parseFloat(actualWt) || 0,
-      volWt: parseFloat(volWt) || 0,
-      chargeableWt: parseFloat(chargeableWt) || 0,
-      length: parseFloat(length) || 0,
-      breadth: parseFloat(breadth) || 0,
-      height: parseFloat(height) || 0,
-      service,
-      network: network || "",
-      zone: zone || "",
-      rateType: rateType || "",
-      totalPrice: parseFloat(totalPrice) || 0,
-      tat: tat || "",
-    });
-
-    await enquiry.save();
-
-    // Send data to Zoho CRM Web-to-Lead
+fastify.post(
+  "/quote-enquiries",
+  {
+    config: {
+      rateLimit: {
+        max: 50,
+        timeWindow: "1 minute",
+      },
+    },
+  },
+  async (request, reply) => {
     try {
-      const zohoData = new URLSearchParams();
-      // Hidden authentication tokens from your HTML
-      zohoData.append("xnQsjsdp", "2fad6954b8023f2fbc4bdc7e2dbc0549a65d76d011e243b729db9929cdf08ce1");
-      zohoData.append("zc_gad", "");
-      zohoData.append("xmIwtLD", "1a9629a986c6048e743fa215eca9f3fac90c7ae16024a68577844e1ff3d6ff263ea9a377fc6c5c394df6f32322f1ab2a");
-      zohoData.append("actionType", "TGVhZHM=");
-      zohoData.append("returnURL", "null");
-      
-      // Form fields mapped exactly as per your HTML
-      // Split Name into First and Last Name so Zoho displays it correctly
-      const nameParts = (name || "Unknown").trim().split(" ");
-      const lastName = nameParts.length > 1 ? nameParts.pop() : nameParts[0];
-      const firstName = nameParts.length > 1 ? nameParts.join(" ") : "";
-      
-      zohoData.append("Last Name", lastName);
-      if (firstName) zohoData.append("First Name", firstName);
+      const {
+        name,
+        phone,
+        email,
+        destination,
+        zoningCountry,
+        zipcode,
+        actualWt,
+        volWt,
+        chargeableWt,
+        length,
+        breadth,
+        height,
+        service,
+        network,
+        zone,
+        rateType,
+        totalPrice,
+        tat,
+      } = request.body;
 
-      if (email) zohoData.append("Email", email);
-      if (phone) zohoData.append("Phone", phone);
-      
-      // Designation mapped to Service
-      zohoData.append("Designation", service || "");
-      
-      // Website mapped to Chargeable weight
-      zohoData.append("Website", chargeableWt ? chargeableWt.toString() : "");
-      
-      // Company mapped to Amount (totalPrice) - required by Zoho usually
-      zohoData.append("Company", totalPrice ? totalPrice.toString() : "0");
-      
-      // Since "First Name" was manually renamed to Destination in the HTML, it caused the Lead's Name to look weird.
-      // We'll put Destination and other package details into the Description field instead!
-      const desc = `Destination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
-      zohoData.append("Description", desc);
-      
-      // Lead Source
-      zohoData.append("Lead Source", "Web Download");
+      if (!name || !phone || !email || !destination || !service) {
+        return reply
+          .status(400)
+          .send({ success: false, message: "Missing required fields" });
+      }
 
-      await fetch("https://crm.zoho.in/crm/WebToLeadForm", {
-        method: "POST",
-        body: zohoData,
+      const enquiry = new QuoteEnquiry({
+        name,
+        phone,
+        email,
+        destination,
+        zoningCountry: zoningCountry || "",
+        zipcode: zipcode || "",
+        actualWt: parseFloat(actualWt) || 0,
+        volWt: parseFloat(volWt) || 0,
+        chargeableWt: parseFloat(chargeableWt) || 0,
+        length: parseFloat(length) || 0,
+        breadth: parseFloat(breadth) || 0,
+        height: parseFloat(height) || 0,
+        service,
+        network: network || "",
+        zone: zone || "",
+        rateType: rateType || "",
+        totalPrice: parseFloat(totalPrice) || 0,
+        tat: tat || "",
       });
-      console.log("Successfully sent quote enquiry to Zoho Web-to-Lead.");
-    } catch (zohoError) {
-      console.error("Failed to send quote enquiry to Zoho CRM:", zohoError);
-    }
 
-    return {
-      success: true,
-      message: "Enquiry submitted successfully",
-      id: enquiry._id,
-    };
-  } catch (error) {
-    console.error("Quote enquiry submission error:", error);
-    return reply.status(500).send({ success: false, message: error.message });
-  }
-});
+      await enquiry.save();
+
+      // Send data to Zoho CRM Web-to-Lead
+      try {
+        const zohoData = new URLSearchParams();
+        // Hidden authentication tokens from your HTML
+        zohoData.append(
+          "xnQsjsdp",
+          "2fad6954b8023f2fbc4bdc7e2dbc0549a65d76d011e243b729db9929cdf08ce1",
+        );
+        zohoData.append("zc_gad", "");
+        zohoData.append(
+          "xmIwtLD",
+          "1a9629a986c6048e743fa215eca9f3fac90c7ae16024a68577844e1ff3d6ff263ea9a377fc6c5c394df6f32322f1ab2a",
+        );
+        zohoData.append("actionType", "TGVhZHM=");
+        zohoData.append("returnURL", "null");
+
+        // Form fields mapped exactly as per your HTML
+        // Split Name into First and Last Name so Zoho displays it correctly
+        const nameParts = (name || "Unknown").trim().split(" ");
+        const lastName = nameParts.length > 1 ? nameParts.pop() : nameParts[0];
+        const firstName = nameParts.length > 1 ? nameParts.join(" ") : "";
+
+        zohoData.append("Last Name", lastName);
+        if (firstName) zohoData.append("First Name", firstName);
+
+        if (email) zohoData.append("Email", email);
+        if (phone) zohoData.append("Phone", phone);
+
+        // Designation mapped to Service
+        zohoData.append("Designation", service || "");
+
+        // Website mapped to Chargeable weight
+        zohoData.append("Website", chargeableWt ? chargeableWt.toString() : "");
+
+        // Company mapped to Amount (totalPrice) - required by Zoho usually
+        zohoData.append("Company", totalPrice ? totalPrice.toString() : "0");
+
+        // Since "First Name" was manually renamed to Destination in the HTML, it caused the Lead's Name to look weird.
+        // We'll put Destination and other package details into the Description field instead!
+        const desc = `Destination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
+        zohoData.append("Description", desc);
+
+        // Lead Source
+        zohoData.append("Lead Source", "Web Download");
+
+        await fetch("https://crm.zoho.in/crm/WebToLeadForm", {
+          method: "POST",
+          body: zohoData,
+        });
+        console.log("Successfully sent quote enquiry to Zoho Web-to-Lead.");
+      } catch (zohoError) {
+        console.error("Failed to send quote enquiry to Zoho CRM:", zohoError);
+      }
+
+      return {
+        success: true,
+        message: "Enquiry submitted successfully",
+        id: enquiry._id,
+      };
+    } catch (error) {
+      console.error("Quote enquiry submission error:", error);
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+  },
+);
 
 // GET /admin/quote-enquiries  — list all, newest first
 fastify.get("/admin/quote-enquiries", async (request, reply) => {
@@ -1847,6 +1868,198 @@ fastify.delete("/admin/quote-enquiries/:id", async (request, reply) => {
     if (!enquiry)
       return reply.status(404).send({ success: false, message: "Not found" });
     return { success: true, message: "Deleted successfully" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+// ============================================================
+// SERVICE AREA ROUTES  — add these to server.js
+// Also add at top:  import ServiceArea from "./models/ServiceArea.js";
+// ============================================================
+
+// ── PUBLIC: search service areas by city / state / pincode ──
+fastify.get("/service-areas/search", async (request, reply) => {
+  try {
+    const q = String(request.query.q || "").trim();
+    if (!q) {
+      return reply
+        .status(400)
+        .send({ success: false, message: "Query parameter 'q' is required" });
+    }
+
+    // Build a flexible OR query
+    const regex = new RegExp(q, "i");
+    const areas = await ServiceArea.find({
+      isActive: true,
+      $or: [{ city: regex }, { state: regex }, { pincode: regex }],
+    })
+      .select("-__v -createdAt -updatedAt")
+      .limit(20)
+      .lean();
+
+    return { success: true, data: areas, count: areas.length };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── PUBLIC: get all active service areas (for the dropdown / list) ──
+fastify.get("/service-areas", async (request, reply) => {
+  try {
+    const cached = apiCache.get("service-areas-public");
+    if (cached) return { success: true, data: cached };
+
+    const areas = await ServiceArea.find({ isActive: true })
+      .sort({ country: 1, state: 1, city: 1 })
+      .select("-__v")
+      .lean();
+
+    apiCache.set("service-areas-public", areas, 600); // 10 min cache
+    return { success: true, data: areas };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── ADMIN: get ALL service areas (including inactive) ──
+fastify.get("/admin/service-areas", async (request, reply) => {
+  try {
+    const { active, country } = request.query;
+    const filter = {};
+    if (active === "true") filter.isActive = true;
+    if (active === "false") filter.isActive = false;
+    if (country) filter.country = new RegExp(country, "i");
+
+    const areas = await ServiceArea.find(filter)
+      .sort({ country: 1, state: 1, city: 1 })
+      .lean();
+    return { success: true, data: areas, total: areas.length };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── ADMIN: get single service area ──
+fastify.get("/admin/service-areas/:id", async (request, reply) => {
+  try {
+    const area = await ServiceArea.findById(request.params.id).lean();
+    if (!area)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Service area not found" });
+    return { success: true, data: area };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── ADMIN: create service area ──
+fastify.post("/admin/service-areas", async (request, reply) => {
+  try {
+    const area = new ServiceArea(request.body);
+    await area.save();
+    apiCache.clear("service-areas-public");
+    return {
+      success: true,
+      data: area,
+      message: "Service area created successfully",
+    };
+  } catch (error) {
+    if (error.code === 11000) {
+      return reply.status(409).send({
+        success: false,
+        message: "A service area with this city/pincode already exists",
+      });
+    }
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── ADMIN: update service area ──
+fastify.put("/admin/service-areas/:id", async (request, reply) => {
+  try {
+    const area = await ServiceArea.findByIdAndUpdate(
+      request.params.id,
+      { ...request.body, updatedAt: new Date() },
+      { new: true, runValidators: true },
+    ).lean();
+    if (!area)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Service area not found" });
+    apiCache.clear("service-areas-public");
+    return {
+      success: true,
+      data: area,
+      message: "Service area updated successfully",
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── ADMIN: delete service area ──
+fastify.delete("/admin/service-areas/:id", async (request, reply) => {
+  try {
+    const area = await ServiceArea.findByIdAndDelete(request.params.id);
+    if (!area)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Service area not found" });
+    apiCache.clear("service-areas-public");
+    return { success: true, message: "Service area deleted successfully" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── ADMIN: bulk toggle active status ──
+fastify.put("/admin/service-areas/:id/toggle", async (request, reply) => {
+  try {
+    const area = await ServiceArea.findById(request.params.id);
+    if (!area)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Service area not found" });
+    area.isActive = !area.isActive;
+    await area.save();
+    apiCache.clear("service-areas-public");
+    return {
+      success: true,
+      data: area,
+      message: `Service area ${area.isActive ? "activated" : "deactivated"}`,
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── ADMIN: stats ──
+fastify.get("/admin/service-areas/stats", async (request, reply) => {
+  try {
+    const [total, active, pickupOnly, dropoffOnly, both] = await Promise.all([
+      ServiceArea.countDocuments(),
+      ServiceArea.countDocuments({ isActive: true }),
+      ServiceArea.countDocuments({
+        isActive: true,
+        pickupAvailable: true,
+        dropoffAvailable: false,
+      }),
+      ServiceArea.countDocuments({
+        isActive: true,
+        pickupAvailable: false,
+        dropoffAvailable: true,
+      }),
+      ServiceArea.countDocuments({
+        isActive: true,
+        pickupAvailable: true,
+        dropoffAvailable: true,
+      }),
+    ]);
+    return {
+      success: true,
+      data: { total, active, pickupOnly, dropoffOnly, both },
+    };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }

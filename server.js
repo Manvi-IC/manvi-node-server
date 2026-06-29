@@ -23,6 +23,7 @@ import Blog from "./models/Blog.js";
 import { INITIAL_BLOG_POSTS } from "./seedBlogs.js";
 import QuoteEnquiry from "./models/QuoteEnquiry.js";
 import ServiceArea from "./models/ServiceArea.js";
+import Subscriber from "./models/Subscriber.js";
 
 // Simple in-memory cache utility to reduce database load
 const apiCache = {
@@ -2198,6 +2199,138 @@ const connectDB = async () => {
   const conn = await mongoose.connect(process.env.MONGODB_URI);
   console.log(`MongoDB Connected: ${conn.connection.host}`);
 };
+
+// ─── NEWSLETTER SUBSCRIBE ────────────────────────────────────────────────────
+
+// POST /api/subscribe — save to MongoDB + sync to Brevo
+fastify.post("/api/subscribe", async (req, reply) => {
+  const { email, firstName = "" } = req.body || {};
+
+  if (!email || !email.includes("@")) {
+    return reply.status(400).send({ success: false, error: "Invalid email" });
+  }
+
+  try {
+    // 1. Save to MongoDB (upsert so duplicates don't error)
+    const subscriber = await Subscriber.findOneAndUpdate(
+      { email: email.toLowerCase().trim() },
+      { email: email.toLowerCase().trim(), firstName, active: true },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    // 2. Sync to Brevo
+    if (process.env.BREVO_API_KEY) {
+      try {
+        const brevoRes = await fetch("https://api.brevo.com/v3/contacts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "api-key": process.env.BREVO_API_KEY,
+          },
+          body: JSON.stringify({
+            email: email.toLowerCase().trim(),
+            attributes: firstName ? { FIRSTNAME: firstName } : {},
+            listIds: [3],
+            updateEnabled: true,
+          }),
+        });
+
+        if (brevoRes.ok || brevoRes.status === 204) {
+          await Subscriber.findByIdAndUpdate(subscriber._id, { brevoSynced: true });
+        }
+      } catch (brevoErr) {
+        console.warn("Brevo sync failed (non-fatal):", brevoErr.message);
+      }
+    }
+
+    return reply.send({ success: true, message: "Subscribed successfully" });
+  } catch (err) {
+    console.error("Subscribe error:", err);
+    return reply.status(500).send({ success: false, error: "Server error" });
+  }
+});
+
+// GET /api/subscribers — admin: list all subscribers
+fastify.get("/api/subscribers", async (req, reply) => {
+  try {
+    const subscribers = await Subscriber.find({ active: true })
+      .sort({ createdAt: -1 })
+      .select("email firstName source brevoSynced createdAt");
+    return reply.send({ success: true, data: subscribers, count: subscribers.length });
+  } catch (err) {
+    return reply.status(500).send({ success: false, error: "Server error" });
+  }
+});
+
+// POST /admin/newsletter/send — create & send a Brevo email campaign to list 3
+fastify.post("/admin/newsletter/send", async (req, reply) => {
+  const { subject, htmlContent, senderName, senderEmail } = req.body || {};
+
+  if (!subject || !htmlContent || !senderEmail) {
+    return reply.status(400).send({ success: false, error: "subject, htmlContent, and senderEmail are required" });
+  }
+
+  if (!process.env.BREVO_API_KEY) {
+    return reply.status(500).send({ success: false, error: "BREVO_API_KEY not configured" });
+  }
+
+  try {
+    // 1. Create the campaign
+    const createRes = await fetch("https://api.brevo.com/v3/emailCampaigns", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        name: `${subject} — ${new Date().toISOString()}`,
+        subject,
+        htmlContent,
+        sender: { name: senderName || "Manvi Logistics", email: senderEmail },
+        recipients: { listIds: [3] },
+        type: "classic",
+      }),
+    });
+
+    const createData = await createRes.json();
+
+    if (!createRes.ok) {
+      console.error("Brevo create campaign error:", createData);
+      return reply.status(500).send({
+        success: false,
+        error: createData.message || "Failed to create campaign in Brevo",
+      });
+    }
+
+    const campaignId = createData.id;
+
+    // 2. Send immediately
+    const sendRes = await fetch(
+      `https://api.brevo.com/v3/emailCampaigns/${campaignId}/sendNow`,
+      {
+        method: "POST",
+        headers: { "api-key": process.env.BREVO_API_KEY },
+      }
+    );
+
+    if (!sendRes.ok) {
+      const sendData = await sendRes.json().catch(() => ({}));
+      console.error("Brevo send error:", sendData);
+      return reply.status(500).send({
+        success: false,
+        error: sendData.message || "Campaign created but failed to send",
+      });
+    }
+
+    return reply.send({ success: true, campaignId, message: "Campaign sent successfully" });
+  } catch (err) {
+    console.error("Newsletter send error:", err);
+    return reply.status(500).send({ success: false, error: "Server error" });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const start = async () => {
   try {

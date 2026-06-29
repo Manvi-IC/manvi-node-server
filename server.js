@@ -313,9 +313,31 @@ function parseWalkinRates(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
   const headerRow = raw[0];
-  const zoneHeaders = headerRow
-    .slice(6)
-    .filter((v) => v !== null && v !== undefined);
+  const rawZoneHeaders = headerRow.slice(6).filter((v) => v !== null && v !== undefined);
+
+  // Robustly extract zone number from header regardless of format.
+  // Handles: plain number (1), float (1.0), text ("Zone 1", "ZONE-1", "Z1"), etc.
+  function extractZoneKey(header) {
+    if (header === null || header === undefined) return null;
+    // If it's already a number
+    if (typeof header === "number") {
+      const n = Math.round(header);
+      return isNaN(n) ? null : String(n);
+    }
+    const str = String(header).trim();
+    // Try direct parse first
+    const direct = parseFloat(str);
+    if (!isNaN(direct)) return String(Math.round(direct));
+    // Extract first integer sequence from string (e.g. "Zone 14" → "14", "Z-3" → "3")
+    const match = str.match(/(\d+)/);
+    if (match) return String(parseInt(match[1], 10));
+    return null;
+  }
+
+  const zoneHeaders = rawZoneHeaders.map(extractZoneKey);
+  console.log(`[parseWalkinRates] Raw zone headers: ${JSON.stringify(rawZoneHeaders)}`);
+  console.log(`[parseWalkinRates] Parsed zone keys: ${JSON.stringify(zoneHeaders)}`);
+
   const rows = [];
   for (let i = 1; i < raw.length; i++) {
     const row = raw[i];
@@ -334,10 +356,10 @@ function parseWalkinRates(workbook) {
     )
       continue;
     const zones = {};
-    zoneHeaders.forEach((zoneNum, idx) => {
+    zoneHeaders.forEach((zoneKey, idx) => {
+      if (!zoneKey) return; // skip unparseable headers
       const val = row[6 + idx];
       if (val !== null && val !== undefined && !isNaN(parseFloat(val))) {
-        const zoneKey = String(Math.round(parseFloat(zoneNum)));
         zones[zoneKey] = Math.round(parseFloat(val) * 100) / 100;
       }
     });
@@ -346,6 +368,7 @@ function parseWalkinRates(workbook) {
   }
   return rows;
 }
+
 
 function parseZoningFile(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -730,10 +753,27 @@ fastify.get("/rates/quote", async (request, reply) => {
         for (const rd of [rateDocS, rateDocB].filter(Boolean)) {
           const zoneMap =
             rd.zones instanceof Map ? Object.fromEntries(rd.zones) : rd.zones;
-          const rawPrice = zoneMap?.[zone];
+          const availableZoneKeys = zoneMap ? Object.keys(zoneMap) : [];
+
+          // Primary lookup: exact zone key match
+          let rawPrice = zoneMap?.[zone];
+
+          // Fallback: if exact zone not found but there's exactly one price column
+          // (e.g. Excel zone header was non-numeric / flat-rate sheet stored with "NaN" key),
+          // use the first valid numeric value in the map.
+          if ((rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) && availableZoneKeys.length > 0) {
+            const firstVal = Object.values(zoneMap)[0];
+            if (firstVal !== undefined && firstVal !== null && !isNaN(firstVal)) {
+              console.log(
+                `[Quote Request] Service "${svc.service}" zone "${zone}" not in [${availableZoneKeys.join(", ")}] — using flat-rate fallback: ${firstVal}`,
+              );
+              rawPrice = firstVal;
+            }
+          }
+
           if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) {
             console.log(
-              `[Quote Request] Service "${svc.service}" price not found in rate doc for Zone "${zone}"`,
+              `[Quote Request] Service "${svc.service}" price not found in rate doc for Zone "${zone}" — zoneMap keys: ${JSON.stringify(availableZoneKeys)}`,
             );
             continue;
           }
@@ -759,6 +799,7 @@ fastify.get("/rates/quote", async (request, reply) => {
             tat: estimateTat(svc.service),
           });
         }
+
       } catch (svcErr) {
         console.error(
           `[Quote Request] Quote error for service "${svc.service}":`,
@@ -784,6 +825,86 @@ fastify.get("/rates/quote", async (request, reply) => {
   } catch (error) {
     console.error("[Quote Request] Quote engine crash:", error);
     return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /rates/debug  — temporary diagnostic endpoint
+// Usage: /rates/debug?country=AUSTRALIA&actualWt=10&zipcode=3000
+// ---------------------------------------------------------------------------
+fastify.get("/rates/debug", async (request, reply) => {
+  try {
+    const country = String(request.query.country || "").trim().toUpperCase();
+    const actualWt = parseFloat(request.query.actualWt) || 0;
+    const zipcode = String(request.query.zipcode || "").trim().toUpperCase();
+
+    const SERVICE_DESTINATION_MAP_KEYS = Object.keys(SERVICE_DESTINATION_MAP);
+    const serviceList = SERVICE_DESTINATION_MAP[country] || [];
+
+    // For each service, check ZipZone and WalkinRate records
+    const serviceDebug = await Promise.all(
+      serviceList.map(async (svc) => {
+        // ZipZone lookups
+        let zipZoneDocs = [];
+        if (svc.zipBased) {
+          const cleanZip = zipcode.replace(/\s+/g, "");
+          for (const tryZip of [cleanZip, cleanZip.slice(0, 4), cleanZip.slice(0, 3), cleanZip.slice(0, 1)]) {
+            if (!tryZip) continue;
+            const doc = await ZipZone.findOne({ service: svc.service, zipcode: tryZip }).lean();
+            if (doc) { zipZoneDocs.push(doc); break; }
+          }
+        } else if (svc.zoningCountry) {
+          const doc = await ZipZone.findOne({ service: svc.service, zipcode: svc.zoningCountry }).lean();
+          if (doc) zipZoneDocs.push(doc);
+        } else if (svc.zoningFromInput) {
+          const lookup = zipcode || country;
+          const doc = await ZipZone.findOne({ service: svc.service, zipcode: lookup }).lean();
+          if (doc) zipZoneDocs.push(doc);
+        }
+
+        // WalkinRate lookups (all slabs for this service, not filtered by weight)
+        const allRateDocs = await WalkinRate.find({ service: svc.service }).lean();
+        const matchingRateDocs = await WalkinRate.find({
+          service: svc.service,
+          minWt: { $lte: actualWt },
+          maxWt: { $gte: actualWt },
+        }).lean();
+
+        return {
+          service: svc.service,
+          zoneStrategy: svc.zipBased ? "zipBased" : svc.zoningCountry ? `zoningCountry(${svc.zoningCountry})` : svc.zoningFromInput ? "zoningFromInput" : svc.zone ? `hardcoded(${svc.zone})` : "unknown",
+          zipZoneFound: zipZoneDocs.length > 0,
+          zipZoneDocs: zipZoneDocs.map(d => ({ zipcode: d.zipcode, zone: d.zone, service: d.service })),
+          totalRateSlabs: allRateDocs.length,
+          matchingWeightSlabs: matchingRateDocs.length,
+          matchingRateDocs: matchingRateDocs.map(d => ({
+            type: d.type,
+            minWt: d.minWt,
+            maxWt: d.maxWt,
+            zoneKeys: d.zones ? Object.keys(d.zones instanceof Map ? Object.fromEntries(d.zones) : d.zones) : [],
+          })),
+        };
+      })
+    );
+
+    // Also sample ZipZone for this country's services
+    const sampleZipZones = await ZipZone.find(
+      { service: { $in: serviceList.map(s => s.service) } },
+      { service: 1, zipcode: 1, zone: 1, _id: 0 }
+    ).limit(20).lean();
+
+    return reply.send({
+      success: true,
+      country,
+      actualWt,
+      zipcode,
+      knownDestinations: SERVICE_DESTINATION_MAP_KEYS,
+      serviceList,
+      serviceDebug,
+      sampleZipZones,
+    });
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message, stack: error.stack });
   }
 });
 
@@ -1622,8 +1743,6 @@ fastify.post("/admin/upload-image", async (request, reply) => {
               resource_type: "image",
               access_mode: "public",
               invalidate: true,
-              format: "auto",
-              quality: "auto",
             },
             (error, result) => {
               if (error) reject(error);

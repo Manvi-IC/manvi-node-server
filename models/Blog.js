@@ -34,7 +34,13 @@ const BlogSchema = new mongoose.Schema({
   featured: { type: Boolean, default: false },
   publishedDate: { type: String, required: true },
   bannerImage: { type: String, default: "" },
+  bannerImageAlt: { type: String, default: "" },
+  mobileBannerImage: { type: String, default: "" },
+  mobileBannerImageAlt: { type: String, default: "" },
   previewImage: { type: String, default: "" },
+  previewImageAlt: { type: String, default: "" },
+  metaTitle: { type: String, default: "" },
+  metaDescription: { type: String, default: "" },
   author: {
     name: { type: String, default: "Manvi Logistics Team" },
     avatarInitials: { type: String, default: "ML" }

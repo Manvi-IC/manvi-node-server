@@ -428,10 +428,10 @@ function estimateTat(service) {
     s.includes("UK") ||
     s.includes("LHR") ||
     s.includes("EUROPE") ||
-    s.includes("DPD")
+    s.includes("DPD")|| s.includes("UPS") 
   )
     return "5–8 business days";
-  if (s.includes("DHL") || s.includes("FEDEX") || s.includes("UPS"))
+  if (s.includes("DHL") || s.includes("FEDEX") )
     return "4–7 business days";
   if (s.includes("ARAMEX")) return "5–8 business days";
   return "5–10 business days";

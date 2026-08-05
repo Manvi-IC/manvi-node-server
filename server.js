@@ -310,67 +310,78 @@ const SERVICE_DESTINATION_MAP = {
   ],
 };
 
+// -----------------------------------------------------------------------------
+// FIX: some exported XLS files have a spurious extra row above the real
+// header — row 0 is just the raw spreadsheet column letters
+// ("A","B","C",..."A1","A2"..."A79") instead of the actual
+// "SHIPPER,NETWORK,SERVICE,TYPE,...zone numbers" header, which ends up on
+// row 1 instead. Blindly trusting raw[0] as the header caused most zone
+// columns to be dropped (no digit in "G","H"...) or mis-assigned to the
+// wrong zone number ("A1" parsed as zone "1" instead of the real zone 21+).
+// That was silently dropping the majority of rows on upload.
+//
+// Fix: scan the first few rows for the one that actually starts with
+// "SHIPPER" and use THAT as the header row, wherever it is. Falls back to
+// row 0 if no such row is found, so normal files keep working unchanged.
+// -----------------------------------------------------------------------------
 function parseWalkinRates(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
-  const headerRow = raw[0];
-  const rawZoneHeaders = headerRow.slice(6).filter((v) => v !== null && v !== undefined);
 
-  // Robustly extract zone number from header regardless of format.
-  // Handles: plain number (1), float (1.0), text ("Zone 1", "ZONE-1", "Z1"), etc.
-  function extractZoneKey(header) {
-    if (header === null || header === undefined) return null;
-    // If it's already a number
-    if (typeof header === "number") {
-      const n = Math.round(header);
-      return isNaN(n) ? null : String(n);
+  // Find header row
+  let headerRowIdx = 0;
+  for (let i = 0; i < Math.min(raw.length, 10); i++) {
+    if (String(raw[i]?.[0] || "").trim().toUpperCase() === "SHIPPER") {
+      headerRowIdx = i;
+      break;
     }
-    const str = String(header).trim();
-    // Try direct parse first
-    const direct = parseFloat(str);
-    if (!isNaN(direct)) return String(Math.round(direct));
-    // Extract first integer sequence from string (e.g. "Zone 14" → "14", "Z-3" → "3")
-    const match = str.match(/(\d+)/);
-    if (match) return String(parseInt(match[1], 10));
-    return null;
   }
 
-  const zoneHeaders = rawZoneHeaders.map(extractZoneKey);
-  console.log(`[parseWalkinRates] Raw zone headers: ${JSON.stringify(rawZoneHeaders)}`);
-  console.log(`[parseWalkinRates] Parsed zone keys: ${JSON.stringify(zoneHeaders)}`);
+  const headerRow = raw[headerRowIdx];
+  const zoneCount = headerRow.length - 6; // All columns from G onwards are zones
+  console.log(`[parseWalkinRates] Total zone columns: ${zoneCount}`);
 
   const rows = [];
-  for (let i = 1; i < raw.length; i++) {
+  for (let i = headerRowIdx + 1; i < raw.length; i++) {
     const row = raw[i];
-    if (!row || !row[0] || row[0] === "SHIPPER") continue;
+    if (!row || !row[0]) continue;
+    
+    // Check if row is empty
+    if (!row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== "")) {
+      continue;
+    }
+    
     const shipper = String(row[0] || "").trim();
     const network = String(row[1] || "").trim();
     const service = String(row[2] || "").trim();
     const type = String(row[3] || "").trim();
     const minWt = parseFloat(row[4]);
     const maxWt = parseFloat(row[5]);
-    if (
-      !service ||
-      !["S", "B", "D"].includes(type) ||
-      isNaN(minWt) ||
-      isNaN(maxWt)
-    )
+    
+    if (!service || !["S", "B", "D"].includes(type) || isNaN(minWt) || isNaN(maxWt)) {
       continue;
+    }
+    
     const zones = {};
-    zoneHeaders.forEach((zoneKey, idx) => {
-      if (!zoneKey) return; // skip unparseable headers
-      const val = row[6 + idx];
-      if (val !== null && val !== undefined && !isNaN(parseFloat(val))) {
-        zones[zoneKey] = Math.round(parseFloat(val) * 100) / 100;
+    let hasValidZone = false;
+    
+    // Process all zone columns by position (1-based indexing)
+    for (let z = 0; z < zoneCount; z++) {
+      const val = row[6 + z];
+      if (val !== null && val !== undefined && !isNaN(parseFloat(val)) && parseFloat(val) > 0) {
+        zones[String(z + 1)] = Math.round(parseFloat(val) * 100) / 100;
+        hasValidZone = true;
       }
-    });
-    if (Object.keys(zones).length === 0) continue;
-    rows.push({ shipper, network, service, type, minWt, maxWt, zones });
+    }
+    
+    if (hasValidZone) {
+      rows.push({ shipper, network, service, type, minWt, maxWt, zones });
+    }
   }
+  
+  console.log(`[parseWalkinRates] Parsed ${rows.length} rows`);
   return rows;
 }
-
-
 function parseZoningFile(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
@@ -428,11 +439,11 @@ function estimateTat(service) {
     s.includes("UK") ||
     s.includes("LHR") ||
     s.includes("EUROPE") ||
-    s.includes("DPD")|| s.includes("UPS") 
+    s.includes("DPD") ||
+    s.includes("UPS")
   )
     return "5–8 business days";
-  if (s.includes("DHL") || s.includes("FEDEX") )
-    return "4–7 business days";
+  if (s.includes("DHL") || s.includes("FEDEX")) return "4–7 business days";
   if (s.includes("ARAMEX")) return "5–8 business days";
   return "5–10 business days";
 }
@@ -480,35 +491,37 @@ fastify.post("/rates/upload", async (request, reply) => {
 
     let rowsInserted = 0,
       rowsFailed = 0,
+      deletedOld = 0,
       errorMessage;
 
     try {
       if (isZoningFile) {
         const rows = parseZoningFile(workbook);
-        const services = [...new Set(rows.map((r) => r.service))];
-        await ZipZone.deleteMany({
-          service: { $in: services },
-          zipcode: { $not: /^\d/ },
-        });
+        // Full wipe of all zoning-country-style entries (non-numeric zipcode),
+        // regardless of which services the new file contains.
+        const delRes = await ZipZone.deleteMany({ zipcode: { $not: /^\d/ } });
+        deletedOld = delRes.deletedCount || 0;
         const docs = rows.map((r) => ({ ...r, uploadId }));
         const res = await rawBulkInsert(ZipZone, docs);
         rowsInserted = res.inserted;
         rowsFailed = res.failed;
       } else if (fileType === "zipcodes") {
         const rows = parseZipCodes(workbook);
-        const services = [...new Set(rows.map((r) => r.service))];
-        await ZipZone.deleteMany({
-          service: { $in: services },
-          zipcode: { $regex: /^\d/ },
-        });
+        // Full wipe of all numeric-zipcode entries, regardless of which
+        // services the new file contains.
+        const delRes = await ZipZone.deleteMany({ zipcode: { $regex: /^\d/ } });
+        deletedOld = delRes.deletedCount || 0;
         const docs = rows.map((r) => ({ ...r, uploadId }));
         const res = await rawBulkInsert(ZipZone, docs);
         rowsInserted = res.inserted;
         rowsFailed = res.failed;
       } else {
         const rows = parseWalkinRates(workbook);
-        const services = [...new Set(rows.map((r) => r.service))];
-        await WalkinRate.deleteMany({ service: { $in: services } });
+        // Full wipe of ALL rate records, regardless of which services the
+        // new file contains — the newest rate sheet always fully replaces
+        // the old one.
+        const delRes = await WalkinRate.deleteMany({});
+        deletedOld = delRes.deletedCount || 0;
         const docs = rows.map((r) => ({ ...r, uploadId }));
         const res = await rawBulkInsert(WalkinRate, docs);
         rowsInserted = res.inserted;
@@ -529,16 +542,20 @@ fastify.post("/rates/upload", async (request, reply) => {
       { status, rowsInserted, rowsFailed, errorMessage },
     );
 
+    // New rates were just written — old cached service lists are now stale.
+    apiCache.clear();
+
     return {
       success: status !== "failed",
       uploadId,
       fileType,
+      deletedOld,
       rowsInserted,
       rowsFailed,
       message:
         status === "failed"
           ? `Upload failed: ${errorMessage || "No rows inserted"}`
-          : `Uploaded successfully: ${rowsInserted} records inserted`,
+          : `Uploaded successfully: ${deletedOld} old row(s) removed, ${rowsInserted} new record(s) inserted`,
     };
   } catch (error) {
     console.error("Rate upload error:", error);
@@ -738,13 +755,17 @@ fastify.get("/rates/quote", async (request, reply) => {
             type: "S",
             minWt: { $lte: chargeableWt },
             maxWt: { $gte: chargeableWt },
-          }).lean(),
+          })
+            .sort({ createdAt: -1 })
+            .lean(),
           WalkinRate.findOne({
             service: svc.service,
             type: "B",
             minWt: { $lte: chargeableWt },
             maxWt: { $gte: chargeableWt },
-          }).lean(),
+          })
+            .sort({ createdAt: -1 })
+            .lean(),
         ]);
 
         console.log(
@@ -762,9 +783,16 @@ fastify.get("/rates/quote", async (request, reply) => {
           // Fallback: if exact zone not found but there's exactly one price column
           // (e.g. Excel zone header was non-numeric / flat-rate sheet stored with "NaN" key),
           // use the first valid numeric value in the map.
-          if ((rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) && availableZoneKeys.length > 0) {
+          if (
+            (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) &&
+            availableZoneKeys.length > 0
+          ) {
             const firstVal = Object.values(zoneMap)[0];
-            if (firstVal !== undefined && firstVal !== null && !isNaN(firstVal)) {
+            if (
+              firstVal !== undefined &&
+              firstVal !== null &&
+              !isNaN(firstVal)
+            ) {
               console.log(
                 `[Quote Request] Service "${svc.service}" zone "${zone}" not in [${availableZoneKeys.join(", ")}] — using flat-rate fallback: ${firstVal}`,
               );
@@ -800,7 +828,6 @@ fastify.get("/rates/quote", async (request, reply) => {
             tat: estimateTat(svc.service),
           });
         }
-
       } catch (svcErr) {
         console.error(
           `[Quote Request] Quote error for service "${svc.service}":`,
@@ -830,14 +857,47 @@ fastify.get("/rates/quote", async (request, reply) => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /rates/clear?type=rates | zipcodes  — wipe an entire table in one go
+// ---------------------------------------------------------------------------
+fastify.delete("/rates/clear", async (request, reply) => {
+  try {
+    const type = String(request.query.type || "").trim();
+
+    if (!["rates", "zipcodes"].includes(type)) {
+      return reply.status(400).send({
+        success: false,
+        message: "Query param 'type' must be 'rates' or 'zipcodes'",
+      });
+    }
+
+    const Model = type === "rates" ? WalkinRate : ZipZone;
+    const result = await Model.deleteMany({});
+    apiCache.clear();
+
+    return {
+      success: true,
+      deletedCount: result.deletedCount || 0,
+      message: `Deleted ${result.deletedCount || 0} ${type} record(s).`,
+    };
+  } catch (error) {
+    console.error("Rates clear error:", error);
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /rates/debug  — temporary diagnostic endpoint
 // Usage: /rates/debug?country=AUSTRALIA&actualWt=10&zipcode=3000
 // ---------------------------------------------------------------------------
 fastify.get("/rates/debug", async (request, reply) => {
   try {
-    const country = String(request.query.country || "").trim().toUpperCase();
+    const country = String(request.query.country || "")
+      .trim()
+      .toUpperCase();
     const actualWt = parseFloat(request.query.actualWt) || 0;
-    const zipcode = String(request.query.zipcode || "").trim().toUpperCase();
+    const zipcode = String(request.query.zipcode || "")
+      .trim()
+      .toUpperCase();
 
     const SERVICE_DESTINATION_MAP_KEYS = Object.keys(SERVICE_DESTINATION_MAP);
     const serviceList = SERVICE_DESTINATION_MAP[country] || [];
@@ -849,22 +909,41 @@ fastify.get("/rates/debug", async (request, reply) => {
         let zipZoneDocs = [];
         if (svc.zipBased) {
           const cleanZip = zipcode.replace(/\s+/g, "");
-          for (const tryZip of [cleanZip, cleanZip.slice(0, 4), cleanZip.slice(0, 3), cleanZip.slice(0, 1)]) {
+          for (const tryZip of [
+            cleanZip,
+            cleanZip.slice(0, 4),
+            cleanZip.slice(0, 3),
+            cleanZip.slice(0, 1),
+          ]) {
             if (!tryZip) continue;
-            const doc = await ZipZone.findOne({ service: svc.service, zipcode: tryZip }).lean();
-            if (doc) { zipZoneDocs.push(doc); break; }
+            const doc = await ZipZone.findOne({
+              service: svc.service,
+              zipcode: tryZip,
+            }).lean();
+            if (doc) {
+              zipZoneDocs.push(doc);
+              break;
+            }
           }
         } else if (svc.zoningCountry) {
-          const doc = await ZipZone.findOne({ service: svc.service, zipcode: svc.zoningCountry }).lean();
+          const doc = await ZipZone.findOne({
+            service: svc.service,
+            zipcode: svc.zoningCountry,
+          }).lean();
           if (doc) zipZoneDocs.push(doc);
         } else if (svc.zoningFromInput) {
           const lookup = zipcode || country;
-          const doc = await ZipZone.findOne({ service: svc.service, zipcode: lookup }).lean();
+          const doc = await ZipZone.findOne({
+            service: svc.service,
+            zipcode: lookup,
+          }).lean();
           if (doc) zipZoneDocs.push(doc);
         }
 
         // WalkinRate lookups (all slabs for this service, not filtered by weight)
-        const allRateDocs = await WalkinRate.find({ service: svc.service }).lean();
+        const allRateDocs = await WalkinRate.find({
+          service: svc.service,
+        }).lean();
         const matchingRateDocs = await WalkinRate.find({
           service: svc.service,
           minWt: { $lte: actualWt },
@@ -873,26 +952,46 @@ fastify.get("/rates/debug", async (request, reply) => {
 
         return {
           service: svc.service,
-          zoneStrategy: svc.zipBased ? "zipBased" : svc.zoningCountry ? `zoningCountry(${svc.zoningCountry})` : svc.zoningFromInput ? "zoningFromInput" : svc.zone ? `hardcoded(${svc.zone})` : "unknown",
+          zoneStrategy: svc.zipBased
+            ? "zipBased"
+            : svc.zoningCountry
+              ? `zoningCountry(${svc.zoningCountry})`
+              : svc.zoningFromInput
+                ? "zoningFromInput"
+                : svc.zone
+                  ? `hardcoded(${svc.zone})`
+                  : "unknown",
           zipZoneFound: zipZoneDocs.length > 0,
-          zipZoneDocs: zipZoneDocs.map(d => ({ zipcode: d.zipcode, zone: d.zone, service: d.service })),
+          zipZoneDocs: zipZoneDocs.map((d) => ({
+            zipcode: d.zipcode,
+            zone: d.zone,
+            service: d.service,
+          })),
           totalRateSlabs: allRateDocs.length,
           matchingWeightSlabs: matchingRateDocs.length,
-          matchingRateDocs: matchingRateDocs.map(d => ({
+          matchingRateDocs: matchingRateDocs.map((d) => ({
             type: d.type,
             minWt: d.minWt,
             maxWt: d.maxWt,
-            zoneKeys: d.zones ? Object.keys(d.zones instanceof Map ? Object.fromEntries(d.zones) : d.zones) : [],
+            zoneKeys: d.zones
+              ? Object.keys(
+                  d.zones instanceof Map
+                    ? Object.fromEntries(d.zones)
+                    : d.zones,
+                )
+              : [],
           })),
         };
-      })
+      }),
     );
 
     // Also sample ZipZone for this country's services
     const sampleZipZones = await ZipZone.find(
-      { service: { $in: serviceList.map(s => s.service) } },
-      { service: 1, zipcode: 1, zone: 1, _id: 0 }
-    ).limit(20).lean();
+      { service: { $in: serviceList.map((s) => s.service) } },
+      { service: 1, zipcode: 1, zone: 1, _id: 0 },
+    )
+      .limit(20)
+      .lean();
 
     return reply.send({
       success: true,
@@ -905,7 +1004,9 @@ fastify.get("/rates/debug", async (request, reply) => {
       sampleZipZones,
     });
   } catch (error) {
-    return reply.status(500).send({ success: false, message: error.message, stack: error.stack });
+    return reply
+      .status(500)
+      .send({ success: false, message: error.message, stack: error.stack });
   }
 });
 
@@ -1770,14 +1871,9 @@ fastify.post("/admin/upload-image", async (request, reply) => {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
-// ============================================================
-// ADD THIS IMPORT at the top of server.js with other imports:
-// import QuoteEnquiry from "./models/QuoteEnquiry.js";
-// ============================================================
 
 // ============================================================
-// QUOTE ENQUIRY ROUTES  — paste these anywhere after your
-// existing /rates/quote route
+// QUOTE ENQUIRY ROUTES
 // ============================================================
 
 // POST /quote-enquiries  — submitted from the Get Quote page
@@ -1994,9 +2090,9 @@ fastify.delete("/admin/quote-enquiries/:id", async (request, reply) => {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
+
 // ============================================================
-// SERVICE AREA ROUTES  — add these to server.js
-// Also add at top:  import ServiceArea from "./models/ServiceArea.js";
+// SERVICE AREA ROUTES
 // ============================================================
 
 // ── PUBLIC: search service areas by city / state / pincode ──
@@ -2215,7 +2311,7 @@ fastify.post("/api/subscribe", async (req, reply) => {
     const subscriber = await Subscriber.findOneAndUpdate(
       { email: email.toLowerCase().trim() },
       { email: email.toLowerCase().trim(), firstName, active: true },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+      { upsert: true, new: true, setDefaultsOnInsert: true },
     );
 
     // 2. Sync to Brevo
@@ -2236,7 +2332,9 @@ fastify.post("/api/subscribe", async (req, reply) => {
         });
 
         if (brevoRes.ok || brevoRes.status === 204) {
-          await Subscriber.findByIdAndUpdate(subscriber._id, { brevoSynced: true });
+          await Subscriber.findByIdAndUpdate(subscriber._id, {
+            brevoSynced: true,
+          });
         }
       } catch (brevoErr) {
         console.warn("Brevo sync failed (non-fatal):", brevoErr.message);
@@ -2256,7 +2354,11 @@ fastify.get("/api/subscribers", async (req, reply) => {
     const subscribers = await Subscriber.find({ active: true })
       .sort({ createdAt: -1 })
       .select("email firstName source brevoSynced createdAt");
-    return reply.send({ success: true, data: subscribers, count: subscribers.length });
+    return reply.send({
+      success: true,
+      data: subscribers,
+      count: subscribers.length,
+    });
   } catch (err) {
     return reply.status(500).send({ success: false, error: "Server error" });
   }
@@ -2267,11 +2369,16 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
   const { subject, htmlContent, senderName, senderEmail } = req.body || {};
 
   if (!subject || !htmlContent || !senderEmail) {
-    return reply.status(400).send({ success: false, error: "subject, htmlContent, and senderEmail are required" });
+    return reply.status(400).send({
+      success: false,
+      error: "subject, htmlContent, and senderEmail are required",
+    });
   }
 
   if (!process.env.BREVO_API_KEY) {
-    return reply.status(500).send({ success: false, error: "BREVO_API_KEY not configured" });
+    return reply
+      .status(500)
+      .send({ success: false, error: "BREVO_API_KEY not configured" });
   }
 
   try {
@@ -2310,7 +2417,7 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
       {
         method: "POST",
         headers: { "api-key": process.env.BREVO_API_KEY },
-      }
+      },
     );
 
     if (!sendRes.ok) {
@@ -2322,13 +2429,16 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
       });
     }
 
-    return reply.send({ success: true, campaignId, message: "Campaign sent successfully" });
+    return reply.send({
+      success: true,
+      campaignId,
+      message: "Campaign sent successfully",
+    });
   } catch (err) {
     console.error("Newsletter send error:", err);
     return reply.status(500).send({ success: false, error: "Server error" });
   }
 });
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 

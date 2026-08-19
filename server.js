@@ -24,8 +24,87 @@ import { INITIAL_BLOG_POSTS } from "./seedBlogs.js";
 import QuoteEnquiry from "./models/QuoteEnquiry.js";
 import ServiceArea from "./models/ServiceArea.js";
 import Subscriber from "./models/Subscriber.js";
+import Customer from "./models/Customer.js";
+import Shipment from "./models/Shipment.js";
 
-// Simple in-memory cache utility to reduce database load
+// ============================================================
+// COUNTRY CODE MAPPING
+// ============================================================
+const COUNTRY_CODE_MAP = {
+  "UNITED STATES": "US",
+  USA: "US",
+  "U.S.A": "US",
+  "UNITED KINGDOM": "GB",
+  UK: "GB",
+  "U.K.": "GB",
+  AUSTRALIA: "AU",
+  CANADA: "CA",
+  INDIA: "IN",
+  GERMANY: "DE",
+  FRANCE: "FR",
+  ITALY: "IT",
+  SPAIN: "ES",
+  JAPAN: "JP",
+  CHINA: "CN",
+  SINGAPORE: "SG",
+  UAE: "AE",
+  "UNITED ARAB EMIRATES": "AE",
+  NETHERLANDS: "NL",
+  BELGIUM: "BE",
+  SWITZERLAND: "CH",
+  SWEDEN: "SE",
+  NORWAY: "NO",
+  DENMARK: "DK",
+  FINLAND: "FI",
+  PORTUGAL: "PT",
+  GREECE: "GR",
+  IRELAND: "IE",
+  "NEW ZEALAND": "NZ",
+  "SOUTH AFRICA": "ZA",
+  BRAZIL: "BR",
+  MEXICO: "MX",
+  RUSSIA: "RU",
+  TURKEY: "TR",
+  "SAUDI ARABIA": "SA",
+  ISRAEL: "IL",
+  "SOUTH KOREA": "KR",
+  MALAYSIA: "MY",
+  THAILAND: "TH",
+  VIETNAM: "VN",
+  PHILIPPINES: "PH",
+  INDONESIA: "ID",
+  PAKISTAN: "PK",
+  BANGLADESH: "BD",
+  EGYPT: "EG",
+  KENYA: "KE",
+  NIGERIA: "NG",
+};
+
+function getCountryCode(country) {
+  if (!country) return null;
+
+  const cleaned = String(country).trim().toUpperCase();
+
+  if (cleaned.length === 2 && /^[A-Z]{2}$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  if (COUNTRY_CODE_MAP[cleaned]) {
+    return COUNTRY_CODE_MAP[cleaned];
+  }
+
+  for (const [key, value] of Object.entries(COUNTRY_CODE_MAP)) {
+    if (cleaned.includes(key) || key.includes(cleaned)) {
+      return value;
+    }
+  }
+
+  console.warn(`⚠️ Unknown country code: "${country}" - using as-is`);
+  return country;
+}
+// ============================================================
+
+// Simple in-memory cache utility
 const apiCache = {
   data: {},
   get: function (key) {
@@ -81,11 +160,21 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Nodemailer Configuration with explicit SMTP settings
+// ============================================================
+// NODEMAILER CONFIGURATION - FIXED
+// ============================================================
+
+console.log("📧 SMTP Configuration:");
+console.log(`   Host: ${process.env.SMTP_HOST || "smtp.gmail.com"}`);
+console.log(`   Port: ${process.env.SMTP_PORT || "587"}`);
+console.log(`   User: ${process.env.SMTP_USER || "Not set"}`);
+console.log(`   Pass: ${process.env.SMTP_PASS ? "****" : "Not set"}`);
+
+// Create transporter with better configuration
 const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
+  port: parseInt(process.env.SMTP_PORT || "587"),
+  secure: process.env.SMTP_SECURE === "true" || false,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
@@ -97,24 +186,80 @@ const transporter = nodemailer.createTransport({
   rateLimit: true,
   maxConnections: 1,
   maxMessages: 5,
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
 });
 
-// Verify email configuration
-transporter.verify((error, success) => {
-  if (error) {
-    console.error("SMTP Configuration Error:", error);
-    console.log(
-      "Please check your SMTP credentials and ensure you're using an App Password",
-    );
-  } else {
-    console.log("SMTP Server is ready to send emails");
+// Verify transporter connection
+const verifyTransporter = async () => {
+  try {
+    await transporter.verify();
+    console.log("✅ SMTP Server is ready to send emails");
+    console.log(`   Using host: ${process.env.SMTP_HOST || "smtp.gmail.com"}`);
+    console.log(`   Using user: ${process.env.SMTP_USER || "Not set"}`);
+    return true;
+  } catch (error) {
+    console.error("❌ SMTP Configuration Error:", error.message);
+    console.error("   Please check your SMTP credentials in .env file");
+    console.error("   If using Gmail, make sure to use an App Password");
+    console.error("   https://myaccount.google.com/apppasswords");
+    return false;
   }
-});
+};
+
+// ============================================================
+// SEND EMAIL FUNCTION - FIXED
+// ============================================================
+
+async function sendEmail(to, subject, html, from = process.env.SMTP_USER) {
+  try {
+    console.log(`[Email] 📧 Attempting to send to: ${to}`);
+    console.log(`[Email] 📝 Subject: ${subject}`);
+
+    // Validate email
+    if (!to || !to.includes("@")) {
+      console.error(`[Email] ❌ Invalid email address: ${to}`);
+      return { success: false, error: "Invalid email address" };
+    }
+
+    // Validate sender
+    if (!from || !from.includes("@")) {
+      console.error(`[Email] ❌ Invalid sender email: ${from}`);
+      from = process.env.SMTP_USER;
+      if (!from || !from.includes("@")) {
+        return { success: false, error: "Invalid sender email" };
+      }
+    }
+
+    const mailOptions = {
+      from: `"Manvi International" <${from}>`,
+      to: to,
+      subject: subject,
+      html: html,
+      replyTo: from,
+    };
+
+    console.log(`[Email] 📤 Sending via SMTP...`);
+    const info = await transporter.sendMail(mailOptions);
+    console.log(
+      `[Email] ✅ Email sent successfully! MessageId: ${info.messageId}`,
+    );
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error(`[Email] ❌ Failed to send email:`, error.message);
+    console.error(`[Email] 📋 Error details:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Verify immediately
+verifyTransporter();
 
 const fastify = Fastify({
   logger:
     process.env.NODE_ENV === "production"
-      ? { level: "error" } // Disable verbose request logs in production, keep only errors
+      ? { level: "error" }
       : { level: process.env.LOG_LEVEL || "info" },
 });
 const frontendUrl = process.env.FRONTEND_URL || "*";
@@ -147,7 +292,6 @@ fastify.register(fastifyCors, {
 fastify.register(fastifyCompress, { threshold: 1024 });
 fastify.register(fastifyMultipart, { limits: { fileSize: 20 * 1024 * 1024 } });
 
-// Generous Global Rate Limit to prevent extreme spam/DDoS while not annoying real users
 fastify.register(fastifyRateLimit, {
   max: 1000,
   timeWindow: "1 minute",
@@ -159,25 +303,6 @@ fastify.register(fastifyRateLimit, {
     };
   },
 });
-
-// ============= EMAIL HELPER FUNCTION =============
-async function sendEmail(to, subject, html, from = process.env.SMTP_USER) {
-  try {
-    const mailOptions = {
-      from: `"Manvi International" <${from}>`,
-      to,
-      subject,
-      html,
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    console.log("Email sent successfully:", info.messageId);
-    return { success: true, messageId: info.messageId };
-  } catch (error) {
-    console.error("Email sending error:", error);
-    return { success: false, error: error.message };
-  }
-}
 
 // ============= ROUTES =============
 
@@ -192,7 +317,7 @@ fastify.get("/site-settings", async (request, reply) => {
     if (cached) return { success: true, data: cached };
     let settings = await SiteSettings.findOne().lean();
     if (!settings) settings = await SiteSettings.create({});
-    apiCache.set("site-settings", settings, 3600); // cache for 1 hour
+    apiCache.set("site-settings", settings, 3600);
     return { success: true, data: settings };
   } catch {
     return reply
@@ -218,14 +343,7 @@ fastify.put("/site-settings", async (request, reply) => {
 
 fastify.post(
   "/admin/login",
-  {
-    config: {
-      rateLimit: {
-        max: 50,
-        timeWindow: "1 minute",
-      },
-    },
-  },
+  { config: { rateLimit: { max: 50, timeWindow: "1 minute" } } },
   async (request, reply) => {
     try {
       const { username, password } = request.body;
@@ -310,78 +428,76 @@ const SERVICE_DESTINATION_MAP = {
   ],
 };
 
-// -----------------------------------------------------------------------------
-// FIX: some exported XLS files have a spurious extra row above the real
-// header — row 0 is just the raw spreadsheet column letters
-// ("A","B","C",..."A1","A2"..."A79") instead of the actual
-// "SHIPPER,NETWORK,SERVICE,TYPE,...zone numbers" header, which ends up on
-// row 1 instead. Blindly trusting raw[0] as the header caused most zone
-// columns to be dropped (no digit in "G","H"...) or mis-assigned to the
-// wrong zone number ("A1" parsed as zone "1" instead of the real zone 21+).
-// That was silently dropping the majority of rows on upload.
-//
-// Fix: scan the first few rows for the one that actually starts with
-// "SHIPPER" and use THAT as the header row, wherever it is. Falls back to
-// row 0 if no such row is found, so normal files keep working unchanged.
-// -----------------------------------------------------------------------------
 function parseWalkinRates(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
 
-  // Find header row
   let headerRowIdx = 0;
   for (let i = 0; i < Math.min(raw.length, 10); i++) {
-    if (String(raw[i]?.[0] || "").trim().toUpperCase() === "SHIPPER") {
+    if (
+      String(raw[i]?.[0] || "")
+        .trim()
+        .toUpperCase() === "SHIPPER"
+    ) {
       headerRowIdx = i;
       break;
     }
   }
 
   const headerRow = raw[headerRowIdx];
-  const zoneCount = headerRow.length - 6; // All columns from G onwards are zones
+  const zoneCount = headerRow.length - 6;
   console.log(`[parseWalkinRates] Total zone columns: ${zoneCount}`);
 
   const rows = [];
   for (let i = headerRowIdx + 1; i < raw.length; i++) {
     const row = raw[i];
     if (!row || !row[0]) continue;
-    
-    // Check if row is empty
-    if (!row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== "")) {
+    if (
+      !row.some(
+        (cell) =>
+          cell !== null && cell !== undefined && String(cell).trim() !== "",
+      )
+    )
       continue;
-    }
-    
+
     const shipper = String(row[0] || "").trim();
     const network = String(row[1] || "").trim();
     const service = String(row[2] || "").trim();
     const type = String(row[3] || "").trim();
     const minWt = parseFloat(row[4]);
     const maxWt = parseFloat(row[5]);
-    
-    if (!service || !["S", "B", "D"].includes(type) || isNaN(minWt) || isNaN(maxWt)) {
+
+    if (
+      !service ||
+      !["S", "B", "D"].includes(type) ||
+      isNaN(minWt) ||
+      isNaN(maxWt)
+    )
       continue;
-    }
-    
+
     const zones = {};
     let hasValidZone = false;
-    
-    // Process all zone columns by position (1-based indexing)
     for (let z = 0; z < zoneCount; z++) {
       const val = row[6 + z];
-      if (val !== null && val !== undefined && !isNaN(parseFloat(val)) && parseFloat(val) > 0) {
+      if (
+        val !== null &&
+        val !== undefined &&
+        !isNaN(parseFloat(val)) &&
+        parseFloat(val) > 0
+      ) {
         zones[String(z + 1)] = Math.round(parseFloat(val) * 100) / 100;
         hasValidZone = true;
       }
     }
-    
-    if (hasValidZone) {
+
+    if (hasValidZone)
       rows.push({ shipper, network, service, type, minWt, maxWt, zones });
-    }
   }
-  
+
   console.log(`[parseWalkinRates] Parsed ${rows.length} rows`);
   return rows;
 }
+
 function parseZoningFile(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const raw = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: null });
@@ -497,8 +613,6 @@ fastify.post("/rates/upload", async (request, reply) => {
     try {
       if (isZoningFile) {
         const rows = parseZoningFile(workbook);
-        // Full wipe of all zoning-country-style entries (non-numeric zipcode),
-        // regardless of which services the new file contains.
         const delRes = await ZipZone.deleteMany({ zipcode: { $not: /^\d/ } });
         deletedOld = delRes.deletedCount || 0;
         const docs = rows.map((r) => ({ ...r, uploadId }));
@@ -507,8 +621,6 @@ fastify.post("/rates/upload", async (request, reply) => {
         rowsFailed = res.failed;
       } else if (fileType === "zipcodes") {
         const rows = parseZipCodes(workbook);
-        // Full wipe of all numeric-zipcode entries, regardless of which
-        // services the new file contains.
         const delRes = await ZipZone.deleteMany({ zipcode: { $regex: /^\d/ } });
         deletedOld = delRes.deletedCount || 0;
         const docs = rows.map((r) => ({ ...r, uploadId }));
@@ -517,9 +629,6 @@ fastify.post("/rates/upload", async (request, reply) => {
         rowsFailed = res.failed;
       } else {
         const rows = parseWalkinRates(workbook);
-        // Full wipe of ALL rate records, regardless of which services the
-        // new file contains — the newest rate sheet always fully replaces
-        // the old one.
         const delRes = await WalkinRate.deleteMany({});
         deletedOld = delRes.deletedCount || 0;
         const docs = rows.map((r) => ({ ...r, uploadId }));
@@ -542,7 +651,6 @@ fastify.post("/rates/upload", async (request, reply) => {
       { status, rowsInserted, rowsFailed, errorMessage },
     );
 
-    // New rates were just written — old cached service lists are now stale.
     apiCache.clear();
 
     return {
@@ -606,15 +714,7 @@ fastify.get("/rates/services", async (request, reply) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// GET /rates/quote
-// ---------------------------------------------------------------------------
 fastify.get("/rates/quote", async (request, reply) => {
-  const activeDbName = mongoose.connection.name;
-  console.log(
-    `[Quote Request] Using Mongoose connection database: "${activeDbName}"`,
-  );
-
   try {
     const actualWt = parseFloat(request.query.actualWt) || 0;
     const length = parseFloat(request.query.length) || 0;
@@ -630,12 +730,7 @@ fastify.get("/rates/quote", async (request, reply) => {
       .trim()
       .toUpperCase();
 
-    console.log(
-      `[Quote Request] Query params - country: "${country}", actualWt: ${actualWt}, zipcode: "${zipcode}", zoningCountry: "${zoningCountry}"`,
-    );
-
     if (!actualWt || !country) {
-      console.warn("[Quote Request] Missing required actualWt or country");
       return reply
         .status(400)
         .send({ success: false, message: "actualWt and country are required" });
@@ -644,15 +739,9 @@ fastify.get("/rates/quote", async (request, reply) => {
     const volWt =
       length && breadth && height ? (length * breadth * height) / 5000 : 0;
     const chargeableWt = Math.ceil(Math.max(actualWt, volWt));
-    console.log(
-      `[Quote Request] Calculated volWt: ${volWt}, chargeableWt: ${chargeableWt}`,
-    );
 
     const ZIPCODE_COUNTRIES = ["AUSTRALIA", "CANADA"];
     if (ZIPCODE_COUNTRIES.includes(country) && !zipcode) {
-      console.warn(
-        `[Quote Request] Missing zipcode for zipcode-required country: ${country}`,
-      );
       return reply.status(400).send({
         success: false,
         message: `Zipcode is required for ${country}`,
@@ -661,15 +750,11 @@ fastify.get("/rates/quote", async (request, reply) => {
 
     const serviceList = SERVICE_DESTINATION_MAP[country];
     if (!serviceList) {
-      console.warn(`[Quote Request] Unknown destination country: "${country}"`);
       return reply
         .status(400)
         .send({ success: false, message: `Unknown destination: ${country}` });
     }
 
-    console.log(
-      `[Quote Request] Found ${serviceList.length} services mapped for destination ${country}`,
-    );
     const results = [];
 
     for (const svc of serviceList) {
@@ -678,9 +763,6 @@ fastify.get("/rates/quote", async (request, reply) => {
 
         if (svc.zone) {
           zone = svc.zone;
-          console.log(
-            `[Quote Request] Service "${svc.service}" hardcoded zone: ${zone}`,
-          );
         } else if (svc.zipBased) {
           const cleanZip = zipcode.replace(/\s+/g, "");
           let zoneDoc = null;
@@ -695,59 +777,28 @@ fastify.get("/rates/quote", async (request, reply) => {
               service: svc.service,
               zipcode: tryZip,
             }).lean();
-            if (zoneDoc) {
-              console.log(
-                `[Quote Request] Service "${svc.service}" zip lookup match for "${tryZip}": Zone ${zoneDoc.zone}`,
-              );
-              break;
-            }
+            if (zoneDoc) break;
           }
-          if (!zoneDoc) {
-            console.log(
-              `[Quote Request] Service "${svc.service}" zip lookup failed for "${cleanZip}"`,
-            );
-            continue;
-          }
+          if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         } else if (svc.zoningCountry) {
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
             zipcode: svc.zoningCountry,
           }).lean();
-          if (!zoneDoc) {
-            console.log(
-              `[Quote Request] Service "${svc.service}" zoningCountry lookup failed for "${svc.zoningCountry}"`,
-            );
-            continue;
-          }
+          if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
-          console.log(
-            `[Quote Request] Service "${svc.service}" zoningCountry "${svc.zoningCountry}" resolved to Zone ${zone}`,
-          );
         } else if (svc.zoningFromInput) {
           const lookup = zoningCountry || country;
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
             zipcode: lookup,
           }).lean();
-          if (!zoneDoc) {
-            console.log(
-              `[Quote Request] Service "${svc.service}" zoningFromInput lookup failed for "${lookup}"`,
-            );
-            continue;
-          }
+          if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
-          console.log(
-            `[Quote Request] Service "${svc.service}" zoningFromInput "${lookup}" resolved to Zone ${zone}`,
-          );
         }
 
-        if (!zone) {
-          console.log(
-            `[Quote Request] Service "${svc.service}" zone could not be resolved`,
-          );
-          continue;
-        }
+        if (!zone) continue;
 
         const [rateDocS, rateDocB] = await Promise.all([
           WalkinRate.findOne({
@@ -768,53 +819,29 @@ fastify.get("/rates/quote", async (request, reply) => {
             .lean(),
         ]);
 
-        console.log(
-          `[Quote Request] Service "${svc.service}" rates query results - Slab doc: ${!!rateDocS}, Per-Kg doc: ${!!rateDocB}`,
-        );
-
         for (const rd of [rateDocS, rateDocB].filter(Boolean)) {
           const zoneMap =
             rd.zones instanceof Map ? Object.fromEntries(rd.zones) : rd.zones;
           const availableZoneKeys = zoneMap ? Object.keys(zoneMap) : [];
 
-          // Primary lookup: exact zone key match
           let rawPrice = zoneMap?.[zone];
 
-          // Fallback: if exact zone not found but there's exactly one price column
-          // (e.g. Excel zone header was non-numeric / flat-rate sheet stored with "NaN" key),
-          // use the first valid numeric value in the map.
           if (
             (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) &&
             availableZoneKeys.length > 0
           ) {
             const firstVal = Object.values(zoneMap)[0];
-            if (
-              firstVal !== undefined &&
-              firstVal !== null &&
-              !isNaN(firstVal)
-            ) {
-              console.log(
-                `[Quote Request] Service "${svc.service}" zone "${zone}" not in [${availableZoneKeys.join(", ")}] — using flat-rate fallback: ${firstVal}`,
-              );
+            if (firstVal !== undefined && firstVal !== null && !isNaN(firstVal))
               rawPrice = firstVal;
-            }
           }
 
-          if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) {
-            console.log(
-              `[Quote Request] Service "${svc.service}" price not found in rate doc for Zone "${zone}" — zoneMap keys: ${JSON.stringify(availableZoneKeys)}`,
-            );
+          if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice))
             continue;
-          }
 
           const totalPrice =
             rd.type === "S"
               ? Math.round(rawPrice)
               : Math.round(rawPrice * chargeableWt);
-
-          console.log(
-            `[Quote Request] Service "${svc.service}" (${rd.type}) resolved Price: ₹${totalPrice} (raw: ${rawPrice})`,
-          );
 
           results.push({
             service: svc.service,
@@ -837,9 +864,6 @@ fastify.get("/rates/quote", async (request, reply) => {
     }
 
     results.sort((a, b) => a.totalPrice - b.totalPrice);
-    console.log(
-      `[Quote Request] Successfully returning ${results.length} quotes`,
-    );
 
     return {
       success: true,
@@ -856,24 +880,18 @@ fastify.get("/rates/quote", async (request, reply) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// DELETE /rates/clear?type=rates | zipcodes  — wipe an entire table in one go
-// ---------------------------------------------------------------------------
 fastify.delete("/rates/clear", async (request, reply) => {
   try {
     const type = String(request.query.type || "").trim();
-
     if (!["rates", "zipcodes"].includes(type)) {
       return reply.status(400).send({
         success: false,
         message: "Query param 'type' must be 'rates' or 'zipcodes'",
       });
     }
-
     const Model = type === "rates" ? WalkinRate : ZipZone;
     const result = await Model.deleteMany({});
     apiCache.clear();
-
     return {
       success: true,
       deletedCount: result.deletedCount || 0,
@@ -882,131 +900,6 @@ fastify.delete("/rates/clear", async (request, reply) => {
   } catch (error) {
     console.error("Rates clear error:", error);
     return reply.status(500).send({ success: false, message: error.message });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// GET /rates/debug  — temporary diagnostic endpoint
-// Usage: /rates/debug?country=AUSTRALIA&actualWt=10&zipcode=3000
-// ---------------------------------------------------------------------------
-fastify.get("/rates/debug", async (request, reply) => {
-  try {
-    const country = String(request.query.country || "")
-      .trim()
-      .toUpperCase();
-    const actualWt = parseFloat(request.query.actualWt) || 0;
-    const zipcode = String(request.query.zipcode || "")
-      .trim()
-      .toUpperCase();
-
-    const SERVICE_DESTINATION_MAP_KEYS = Object.keys(SERVICE_DESTINATION_MAP);
-    const serviceList = SERVICE_DESTINATION_MAP[country] || [];
-
-    // For each service, check ZipZone and WalkinRate records
-    const serviceDebug = await Promise.all(
-      serviceList.map(async (svc) => {
-        // ZipZone lookups
-        let zipZoneDocs = [];
-        if (svc.zipBased) {
-          const cleanZip = zipcode.replace(/\s+/g, "");
-          for (const tryZip of [
-            cleanZip,
-            cleanZip.slice(0, 4),
-            cleanZip.slice(0, 3),
-            cleanZip.slice(0, 1),
-          ]) {
-            if (!tryZip) continue;
-            const doc = await ZipZone.findOne({
-              service: svc.service,
-              zipcode: tryZip,
-            }).lean();
-            if (doc) {
-              zipZoneDocs.push(doc);
-              break;
-            }
-          }
-        } else if (svc.zoningCountry) {
-          const doc = await ZipZone.findOne({
-            service: svc.service,
-            zipcode: svc.zoningCountry,
-          }).lean();
-          if (doc) zipZoneDocs.push(doc);
-        } else if (svc.zoningFromInput) {
-          const lookup = zipcode || country;
-          const doc = await ZipZone.findOne({
-            service: svc.service,
-            zipcode: lookup,
-          }).lean();
-          if (doc) zipZoneDocs.push(doc);
-        }
-
-        // WalkinRate lookups (all slabs for this service, not filtered by weight)
-        const allRateDocs = await WalkinRate.find({
-          service: svc.service,
-        }).lean();
-        const matchingRateDocs = await WalkinRate.find({
-          service: svc.service,
-          minWt: { $lte: actualWt },
-          maxWt: { $gte: actualWt },
-        }).lean();
-
-        return {
-          service: svc.service,
-          zoneStrategy: svc.zipBased
-            ? "zipBased"
-            : svc.zoningCountry
-              ? `zoningCountry(${svc.zoningCountry})`
-              : svc.zoningFromInput
-                ? "zoningFromInput"
-                : svc.zone
-                  ? `hardcoded(${svc.zone})`
-                  : "unknown",
-          zipZoneFound: zipZoneDocs.length > 0,
-          zipZoneDocs: zipZoneDocs.map((d) => ({
-            zipcode: d.zipcode,
-            zone: d.zone,
-            service: d.service,
-          })),
-          totalRateSlabs: allRateDocs.length,
-          matchingWeightSlabs: matchingRateDocs.length,
-          matchingRateDocs: matchingRateDocs.map((d) => ({
-            type: d.type,
-            minWt: d.minWt,
-            maxWt: d.maxWt,
-            zoneKeys: d.zones
-              ? Object.keys(
-                  d.zones instanceof Map
-                    ? Object.fromEntries(d.zones)
-                    : d.zones,
-                )
-              : [],
-          })),
-        };
-      }),
-    );
-
-    // Also sample ZipZone for this country's services
-    const sampleZipZones = await ZipZone.find(
-      { service: { $in: serviceList.map((s) => s.service) } },
-      { service: 1, zipcode: 1, zone: 1, _id: 0 },
-    )
-      .limit(20)
-      .lean();
-
-    return reply.send({
-      success: true,
-      country,
-      actualWt,
-      zipcode,
-      knownDestinations: SERVICE_DESTINATION_MAP_KEYS,
-      serviceList,
-      serviceDebug,
-      sampleZipZones,
-    });
-  } catch (error) {
-    return reply
-      .status(500)
-      .send({ success: false, message: error.message, stack: error.stack });
   }
 });
 
@@ -1028,7 +921,7 @@ fastify.get("/rates/countries", async (request, reply) => {
       europe: europeDpdCountries.map((d) => d.zipcode).sort(),
       international: intlCountries.map((d) => d.zipcode).sort(),
     };
-    apiCache.set("rates-countries", data, 3600); // cache 1 hour
+    apiCache.set("rates-countries", data, 3600);
     return { success: true, ...data };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -1037,7 +930,6 @@ fastify.get("/rates/countries", async (request, reply) => {
 
 // ============= BLOG CRUD OPERATIONS =============
 
-// Seed initial blogs
 async function seedBlogs() {
   try {
     const count = await Blog.countDocuments();
@@ -1051,44 +943,37 @@ async function seedBlogs() {
   }
 }
 
-// Get all blogs (public)
 fastify.get("/api/blogs", async (request, reply) => {
   try {
     const { category } = request.query;
     const cacheKey = `blogs_${category || "all"}`;
     const cached = apiCache.get(cacheKey);
     if (cached) return { success: true, data: cached };
-
     const filter = category && category !== "all" ? { category } : {};
-    // Database Optimization: Exclude massive 'content' string for lists
     const blogs = await Blog.find(filter)
       .select("-content")
       .sort({ createdAt: -1 })
       .lean();
-
-    apiCache.set(cacheKey, blogs, 1800); // 30 mins
+    apiCache.set(cacheKey, blogs, 1800);
     return { success: true, data: blogs };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Get single blog by slug (public)
 fastify.get("/api/blogs/:slug", async (request, reply) => {
   try {
     const blog = await Blog.findOne({ slug: request.params.slug });
-    if (!blog) {
+    if (!blog)
       return reply
         .status(404)
         .send({ success: false, message: "Blog not found" });
-    }
     return { success: true, data: blog };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Get all blogs (admin)
 fastify.get("/admin/blogs", async (request, reply) => {
   try {
     const blogs = await Blog.find({}).sort({ createdAt: -1 });
@@ -1098,22 +983,19 @@ fastify.get("/admin/blogs", async (request, reply) => {
   }
 });
 
-// Get single blog by ID (admin)
 fastify.get("/admin/blogs/:id", async (request, reply) => {
   try {
     const blog = await Blog.findById(request.params.id);
-    if (!blog) {
+    if (!blog)
       return reply
         .status(404)
         .send({ success: false, message: "Blog not found" });
-    }
     return { success: true, data: blog };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Create blog (admin)
 fastify.post("/admin/blogs", async (request, reply) => {
   try {
     const blogData = request.body;
@@ -1125,14 +1007,13 @@ fastify.post("/admin/blogs", async (request, reply) => {
     }
     const blog = new Blog(blogData);
     await blog.save();
-    apiCache.clear(); // invalidate cache
+    apiCache.clear();
     return { success: true, data: blog, message: "Blog created successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Update blog (admin)
 fastify.put("/admin/blogs/:id", async (request, reply) => {
   try {
     const blogData = request.body;
@@ -1147,28 +1028,25 @@ fastify.put("/admin/blogs/:id", async (request, reply) => {
       { ...blogData, updatedAt: new Date() },
       { new: true, runValidators: true },
     );
-    if (!blog) {
+    if (!blog)
       return reply
         .status(404)
         .send({ success: false, message: "Blog not found" });
-    }
-    apiCache.clear(); // invalidate cache
+    apiCache.clear();
     return { success: true, data: blog, message: "Blog updated successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Delete blog (admin)
 fastify.delete("/admin/blogs/:id", async (request, reply) => {
   try {
     const blog = await Blog.findByIdAndDelete(request.params.id);
-    if (!blog) {
+    if (!blog)
       return reply
         .status(404)
         .send({ success: false, message: "Blog not found" });
-    }
-    apiCache.clear(); // invalidate cache
+    apiCache.clear();
     return { success: true, message: "Blog deleted successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -1177,7 +1055,6 @@ fastify.delete("/admin/blogs/:id", async (request, reply) => {
 
 // ============= JOB CRUD OPERATIONS =============
 
-// Get all jobs (with optional filter for active only)
 fastify.get("/admin/jobs", async (request, reply) => {
   try {
     const { active } = request.query;
@@ -1189,22 +1066,19 @@ fastify.get("/admin/jobs", async (request, reply) => {
   }
 });
 
-// Get single job
 fastify.get("/admin/jobs/:id", async (request, reply) => {
   try {
     const job = await Job.findById(request.params.id);
-    if (!job) {
+    if (!job)
       return reply
         .status(404)
         .send({ success: false, message: "Job not found" });
-    }
     return { success: true, data: job };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Create job
 fastify.post("/admin/jobs", async (request, reply) => {
   try {
     const job = new Job(request.body);
@@ -1215,7 +1089,6 @@ fastify.post("/admin/jobs", async (request, reply) => {
   }
 });
 
-// Update job
 fastify.put("/admin/jobs/:id", async (request, reply) => {
   try {
     const job = await Job.findByIdAndUpdate(
@@ -1223,26 +1096,23 @@ fastify.put("/admin/jobs/:id", async (request, reply) => {
       { ...request.body, updatedAt: new Date() },
       { new: true, runValidators: true },
     );
-    if (!job) {
+    if (!job)
       return reply
         .status(404)
         .send({ success: false, message: "Job not found" });
-    }
     return { success: true, data: job, message: "Job updated successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Delete job
 fastify.delete("/admin/jobs/:id", async (request, reply) => {
   try {
     const job = await Job.findByIdAndDelete(request.params.id);
-    if (!job) {
+    if (!job)
       return reply
         .status(404)
         .send({ success: false, message: "Job not found" });
-    }
     return { success: true, message: "Job deleted successfully" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -1251,42 +1121,36 @@ fastify.delete("/admin/jobs/:id", async (request, reply) => {
 
 // ============= JOB APPLICATION ROUTES =============
 
-// Get all applications (for admin panel)
 fastify.get("/admin/applications", async (request, reply) => {
   try {
     const { jobId, status } = request.query;
     const filter = {};
     if (jobId) filter.jobId = jobId;
     if (status) filter.status = status;
-
     const applications = await JobApplication.find(filter)
       .sort({ createdAt: -1 })
       .populate("jobId", "title department location");
-
     return { success: true, data: applications };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Get single application
 fastify.get("/admin/applications/:id", async (request, reply) => {
   try {
     const application = await JobApplication.findById(
       request.params.id,
     ).populate("jobId", "title department location");
-    if (!application) {
+    if (!application)
       return reply
         .status(404)
         .send({ success: false, message: "Application not found" });
-    }
     return { success: true, data: application };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// Update application status
 fastify.put("/admin/applications/:id", async (request, reply) => {
   try {
     const { status, notes } = request.body;
@@ -1295,11 +1159,10 @@ fastify.put("/admin/applications/:id", async (request, reply) => {
       { status, notes, updatedAt: new Date() },
       { new: true },
     );
-    if (!application) {
+    if (!application)
       return reply
         .status(404)
         .send({ success: false, message: "Application not found" });
-    }
     return {
       success: true,
       data: application,
@@ -1310,31 +1173,21 @@ fastify.put("/admin/applications/:id", async (request, reply) => {
   }
 });
 
-// ============= RESUME DOWNLOAD ENDPOINT (FIXED) =============
 fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
   try {
     const application = await JobApplication.findById(
       request.params.applicationId,
     );
-    if (!application) {
-      return reply.status(404).send({
-        success: false,
-        message: "Application not found",
-      });
-    }
-
-    console.log(`📥 Downloading resume for: ${application.fullName}`);
-    console.log(`📎 Resume URL: ${application.resumeUrl}`);
-    console.log(`📎 Public ID: ${application.resumePublicId}`);
+    if (!application)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Application not found" });
 
     let fileBuffer = null;
     const fileName = `${application.fullName.replace(/\s+/g, "_")}_Resume.pdf`;
 
     try {
-      // Method 1: Try direct fetch with fl_attachment and raw flag
-      console.log("🔄 Method 1: Direct fetch with fl_attachment...");
       const directUrl = `${application.resumeUrl}?fl_attachment=1&raw=1`;
-
       const response = await fetch(directUrl, {
         method: "GET",
         headers: {
@@ -1344,29 +1197,16 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
       });
 
       if (response.ok) {
-        const arrayBuffer = await response.arrayBuffer();
-        fileBuffer = Buffer.from(arrayBuffer);
-        console.log(
-          `✅ Direct fetch successful, size: ${fileBuffer.length} bytes`,
-        );
+        fileBuffer = Buffer.from(await response.arrayBuffer());
       } else {
-        console.log(`⚠️ Direct fetch failed with status: ${response.status}`);
-
-        // Method 2: Try using Cloudinary API with signed URL
-        console.log("🔄 Method 2: Trying Cloudinary API with signed URL...");
-
         const timestamp = Math.floor(Date.now() / 1000) + 300;
         const publicId = application.resumePublicId;
-
-        // Generate signature
         const signatureString = `public_id=${publicId}&timestamp=${timestamp}`;
         const signature = crypto
           .createHmac("sha256", process.env.CLOUDINARY_API_SECRET)
           .update(signatureString)
           .digest("hex");
-
         const signedUrl = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/raw/upload/${publicId}?timestamp=${timestamp}&signature=${signature}&api_key=${process.env.CLOUDINARY_API_KEY}&fl_attachment=1`;
-
         const signedResponse = await fetch(signedUrl, {
           method: "GET",
           headers: {
@@ -1376,26 +1216,12 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
         });
 
         if (signedResponse.ok) {
-          const arrayBuffer = await signedResponse.arrayBuffer();
-          fileBuffer = Buffer.from(arrayBuffer);
-          console.log(
-            `✅ Signed URL fetch successful, size: ${fileBuffer.length} bytes`,
-          );
+          fileBuffer = Buffer.from(await signedResponse.arrayBuffer());
         } else {
-          console.log(
-            `⚠️ Signed URL fetch failed with status: ${signedResponse.status}`,
-          );
-
-          // Method 3: Try Cloudinary API resource endpoint
-          console.log(
-            "🔄 Method 3: Trying Cloudinary API resource endpoint...",
-          );
-
           const apiUrl = `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/resources/raw/upload/${publicId}`;
           const authString = Buffer.from(
             `${process.env.CLOUDINARY_API_KEY}:${process.env.CLOUDINARY_API_SECRET}`,
           ).toString("base64");
-
           const apiResponse = await fetch(apiUrl, {
             method: "GET",
             headers: {
@@ -1406,9 +1232,6 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
 
           if (apiResponse.ok) {
             const resourceData = await apiResponse.json();
-            console.log(`📎 Resource found: ${resourceData.secure_url}`);
-
-            // Download using the secure_url from API
             const downloadResponse = await fetch(resourceData.secure_url, {
               method: "GET",
               headers: {
@@ -1416,21 +1239,14 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
                 "User-Agent": "Mozilla/5.0",
               },
             });
-
             if (downloadResponse.ok) {
-              const arrayBuffer = await downloadResponse.arrayBuffer();
-              fileBuffer = Buffer.from(arrayBuffer);
-              console.log(
-                `✅ API download successful, size: ${fileBuffer.length} bytes`,
-              );
+              fileBuffer = Buffer.from(await downloadResponse.arrayBuffer());
             } else {
               throw new Error(
                 `API download failed: ${downloadResponse.status}`,
               );
             }
           } else {
-            // Method 4: Last resort - try the original URL
-            console.log("🔄 Method 4: Last resort - trying original URL...");
             const lastResponse = await fetch(application.resumeUrl, {
               method: "GET",
               headers: {
@@ -1438,13 +1254,8 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
                 "User-Agent": "Mozilla/5.0",
               },
             });
-
             if (lastResponse.ok) {
-              const arrayBuffer = await lastResponse.arrayBuffer();
-              fileBuffer = Buffer.from(arrayBuffer);
-              console.log(
-                `✅ Last resort successful, size: ${fileBuffer.length} bytes`,
-              );
+              fileBuffer = Buffer.from(await lastResponse.arrayBuffer());
             } else {
               throw new Error(
                 `All methods failed. Last status: ${lastResponse.status}`,
@@ -1454,18 +1265,12 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
         }
       }
     } catch (fetchError) {
-      console.error("❌ Error in fetch methods:", fetchError.message);
       throw new Error(`Could not download file: ${fetchError.message}`);
     }
 
-    if (!fileBuffer || fileBuffer.length === 0) {
+    if (!fileBuffer || fileBuffer.length === 0)
       throw new Error("Downloaded file is empty");
-    }
 
-    console.log(`✅ Final file size: ${fileBuffer.length} bytes`);
-    console.log(`✅ First 4 bytes: ${fileBuffer.slice(0, 4).toString()}`);
-
-    // Set proper headers for download
     reply.header("Content-Type", "application/pdf");
     reply.header("Content-Disposition", `attachment; filename="${fileName}"`);
     reply.header("Content-Length", fileBuffer.length);
@@ -1483,43 +1288,32 @@ fastify.get("/admin/download-resume/:applicationId", async (request, reply) => {
   }
 });
 
-// ============= SUBMIT JOB APPLICATION =============
-
-// Submit job application (from frontend)
 fastify.post("/api/jobs/apply", async (request, reply) => {
   try {
     const data = await request.file();
-    if (!data) {
+    if (!data)
       return reply
         .status(400)
         .send({ success: false, message: "No file uploaded" });
-    }
 
-    // Extract form fields
     const fields = {};
-    for (const [key, value] of Object.entries(data.fields)) {
+    for (const [key, value] of Object.entries(data.fields))
       fields[key] = value.value;
-    }
 
     const { jobId, fullName, email, phone, experience, noticePeriod } = fields;
 
-    // Validate required fields
     if (!jobId || !fullName || !email || !experience || !noticePeriod) {
-      return reply.status(400).send({
-        success: false,
-        message: "Missing required fields",
-      });
+      return reply
+        .status(400)
+        .send({ success: false, message: "Missing required fields" });
     }
 
-    // Get job details
     const job = await Job.findById(jobId);
-    if (!job) {
+    if (!job)
       return reply
         .status(404)
         .send({ success: false, message: "Job not found" });
-    }
 
-    // Upload resume to Cloudinary
     const chunks = [];
     for await (const chunk of data.file) chunks.push(chunk);
     const buffer = Buffer.concat(chunks);
@@ -1546,14 +1340,12 @@ fastify.post("/api/jobs/apply", async (request, reply) => {
           .end(buffer);
       });
     } catch (cloudinaryError) {
-      console.error("Cloudinary upload error:", cloudinaryError);
       return reply.status(500).send({
         success: false,
         message: "Failed to upload resume. Please try again.",
       });
     }
 
-    // Create application record
     const application = new JobApplication({
       jobId,
       jobTitle: job.title,
@@ -1567,10 +1359,8 @@ fastify.post("/api/jobs/apply", async (request, reply) => {
     });
     await application.save();
 
-    // Send email notifications
     let emailErrors = [];
 
-    // Admin notification
     try {
       const adminEmailHtml = `
         <h2>New Job Application Received</h2>
@@ -1583,60 +1373,37 @@ fastify.post("/api/jobs/apply", async (request, reply) => {
         <p><strong>Notice Period:</strong> ${noticePeriod}</p>
         <p><strong>Resume:</strong> <a href="${cloudinaryResult.secure_url}">View Resume</a></p>
         <p><strong>Applied at:</strong> ${new Date().toLocaleString()}</p>
-        <hr />
-        <p>View all applications in the admin panel.</p>
-      `;
-
+        <hr /><p>View all applications in the admin panel.</p>`;
       const adminEmailResult = await sendEmail(
         "harmanjeet.singh@iic.ac.in",
         `New Job Application: ${job.title} - ${fullName}`,
         adminEmailHtml,
       );
-
-      if (!adminEmailResult.success) {
+      if (!adminEmailResult.success)
         emailErrors.push("Admin notification failed");
-        console.error("Admin email failed:", adminEmailResult.error);
-      }
     } catch (emailError) {
       emailErrors.push("Admin notification failed");
-      console.error("Admin email error:", emailError);
     }
 
-    // Applicant confirmation
     try {
       const confirmationHtml = `
         <h2>Thank you for applying at Manvi International</h2>
         <p>Dear ${fullName},</p>
         <p>We have received your application for the position of <strong>${job.title}</strong>.</p>
-        <p>Our team will review your application and get back to you shortly.</p>
-        <br />
+        <p>Our team will review your application and get back to you shortly.</p><br />
         <p><strong>Application Summary:</strong></p>
-        <ul>
-          <li><strong>Position:</strong> ${job.title}</li>
-          <li><strong>Department:</strong> ${job.department}</li>
-          <li><strong>Location:</strong> ${job.location}</li>
-          <li><strong>Experience:</strong> ${experience}</li>
-          <li><strong>Notice Period:</strong> ${noticePeriod}</li>
-        </ul>
-        <br />
-        <p>Best regards,</p>
-        <p><strong>Manvi International Team</strong></p>
-        <p><small>This is an automated confirmation. Please do not reply to this email.</small></p>
-      `;
-
+        <ul><li><strong>Position:</strong> ${job.title}</li><li><strong>Department:</strong> ${job.department}</li><li><strong>Location:</strong> ${job.location}</li><li><strong>Experience:</strong> ${experience}</li><li><strong>Notice Period:</strong> ${noticePeriod}</li></ul><br />
+        <p>Best regards,</p><p><strong>Manvi International Team</strong></p>
+        <p><small>This is an automated confirmation. Please do not reply to this email.</small></p>`;
       const applicantEmailResult = await sendEmail(
         email,
         `Application Received: ${job.title} - Manvi International`,
         confirmationHtml,
       );
-
-      if (!applicantEmailResult.success) {
+      if (!applicantEmailResult.success)
         emailErrors.push("Applicant confirmation failed");
-        console.error("Applicant email failed:", applicantEmailResult.error);
-      }
     } catch (emailError) {
       emailErrors.push("Applicant confirmation failed");
-      console.error("Applicant email error:", emailError);
     }
 
     return {
@@ -1655,34 +1422,27 @@ fastify.post("/api/jobs/apply", async (request, reply) => {
   }
 });
 
-// Submit speculative job application
 fastify.post("/api/jobs/apply-speculative", async (request, reply) => {
   try {
     const data = await request.file();
-    if (!data) {
+    if (!data)
       return reply
         .status(400)
         .send({ success: false, message: "No file uploaded" });
-    }
 
-    // Extract form fields
     const fields = {};
-    for (const [key, value] of Object.entries(data.fields)) {
+    for (const [key, value] of Object.entries(data.fields))
       fields[key] = value.value;
-    }
 
     const { fullName, email, phone, experience, noticePeriod, message } =
       fields;
 
-    // Validate required fields
     if (!fullName || !email || !experience || !noticePeriod) {
-      return reply.status(400).send({
-        success: false,
-        message: "Missing required fields",
-      });
+      return reply
+        .status(400)
+        .send({ success: false, message: "Missing required fields" });
     }
 
-    // Upload resume to Cloudinary
     const chunks = [];
     for await (const chunk of data.file) chunks.push(chunk);
     const buffer = Buffer.concat(chunks);
@@ -1709,14 +1469,12 @@ fastify.post("/api/jobs/apply-speculative", async (request, reply) => {
           .end(buffer);
       });
     } catch (cloudinaryError) {
-      console.error("Cloudinary upload error:", cloudinaryError);
       return reply.status(500).send({
         success: false,
         message: "Failed to upload resume. Please try again.",
       });
     }
 
-    // Create application record (with null jobId for speculative)
     const application = new JobApplication({
       jobId: null,
       jobTitle: "Speculative Application",
@@ -1732,55 +1490,35 @@ fastify.post("/api/jobs/apply-speculative", async (request, reply) => {
     });
     await application.save();
 
-    // Send email notifications
-    let emailErrors = [];
-
     try {
       const adminEmailHtml = `
         <h2>New Speculative Application Received</h2>
-        <p><strong>Applicant:</strong> ${fullName}</p>
-        <p><strong>Email:</strong> ${email}</p>
-        <p><strong>Phone:</strong> ${phone || "N/A"}</p>
-        <p><strong>Experience:</strong> ${experience}</p>
+        <p><strong>Applicant:</strong> ${fullName}</p><p><strong>Email:</strong> ${email}</p>
+        <p><strong>Phone:</strong> ${phone || "N/A"}</p><p><strong>Experience:</strong> ${experience}</p>
         <p><strong>Notice Period:</strong> ${noticePeriod}</p>
         ${message ? `<p><strong>Message:</strong> ${message}</p>` : ""}
         <p><strong>Resume:</strong> <a href="${cloudinaryResult.secure_url}">View Resume</a></p>
-        <p><strong>Applied at:</strong> ${new Date().toLocaleString()}</p>
-        <hr />
-        <p>This is a speculative application. No specific role was applied for.</p>
-        <p>View all applications in the admin panel.</p>
-      `;
-
+        <p><strong>Applied at:</strong> ${new Date().toLocaleString()}</p><hr />
+        <p>This is a speculative application. No specific role was applied for.</p>`;
       await sendEmail(
         "harmanjeet.singh@iic.ac.in",
         `New Speculative Application - ${fullName}`,
         adminEmailHtml,
       );
-    } catch (emailError) {
-      emailErrors.push("Admin notification failed");
-      console.error("Admin email error:", emailError);
-    }
+    } catch (emailError) {}
 
     try {
       const confirmationHtml = `
         <h2>Thank you for your interest in Manvi International</h2>
-        <p>Dear ${fullName},</p>
-        <p>We have received your speculative application.</p>
-        <p>Our team will review your profile and get back to you if we find a suitable position.</p>
-        <br />
-        <p>Best regards,</p>
-        <p><strong>Manvi International Team</strong></p>
-      `;
-
+        <p>Dear ${fullName},</p><p>We have received your speculative application.</p>
+        <p>Our team will review your profile and get back to you if we find a suitable position.</p><br />
+        <p>Best regards,</p><p><strong>Manvi International Team</strong></p>`;
       await sendEmail(
         email,
         `Application Received - Manvi International`,
         confirmationHtml,
       );
-    } catch (emailError) {
-      emailErrors.push("Applicant confirmation failed");
-      console.error("Applicant email error:", emailError);
-    }
+    } catch (emailError) {}
 
     return {
       success: true,
@@ -1797,7 +1535,6 @@ fastify.post("/api/jobs/apply-speculative", async (request, reply) => {
   }
 });
 
-// Get job applications count (for dashboard)
 fastify.get("/admin/applications/stats", async (request, reply) => {
   try {
     const total = await JobApplication.countDocuments();
@@ -1811,7 +1548,6 @@ fastify.get("/admin/applications/stats", async (request, reply) => {
     const rejected = await JobApplication.countDocuments({
       status: "rejected",
     });
-
     return {
       success: true,
       data: { total, pending, reviewed, shortlisted, rejected },
@@ -1821,15 +1557,13 @@ fastify.get("/admin/applications/stats", async (request, reply) => {
   }
 });
 
-// ============= IMAGE UPLOAD ENDPOINT =============
 fastify.post("/admin/upload-image", async (request, reply) => {
   try {
     const data = await request.file();
-    if (!data) {
+    if (!data)
       return reply
         .status(400)
         .send({ success: false, message: "No file uploaded" });
-    }
 
     const chunks = [];
     for await (const chunk of data.file) chunks.push(chunk);
@@ -1854,7 +1588,6 @@ fastify.post("/admin/upload-image", async (request, reply) => {
           .end(buffer);
       });
     } catch (cloudinaryError) {
-      console.error("Cloudinary upload error:", cloudinaryError);
       return reply.status(500).send({
         success: false,
         message: "Failed to upload image to Cloudinary",
@@ -1867,7 +1600,6 @@ fastify.post("/admin/upload-image", async (request, reply) => {
       message: "Image uploaded successfully",
     };
   } catch (error) {
-    console.error("Image upload endpoint error:", error);
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
@@ -1876,17 +1608,9 @@ fastify.post("/admin/upload-image", async (request, reply) => {
 // QUOTE ENQUIRY ROUTES
 // ============================================================
 
-// POST /quote-enquiries  — submitted from the Get Quote page
 fastify.post(
   "/quote-enquiries",
-  {
-    config: {
-      rateLimit: {
-        max: 50,
-        timeWindow: "1 minute",
-      },
-    },
-  },
+  { config: { rateLimit: { max: 50, timeWindow: "1 minute" } } },
   async (request, reply) => {
     try {
       const {
@@ -1939,10 +1663,8 @@ fastify.post(
 
       await enquiry.save();
 
-      // Send data to Zoho CRM Web-to-Lead
       try {
         const zohoData = new URLSearchParams();
-        // Hidden authentication tokens from your HTML
         zohoData.append(
           "xnQsjsdp",
           "2fad6954b8023f2fbc4bdc7e2dbc0549a65d76d011e243b729db9929cdf08ce1",
@@ -1955,139 +1677,433 @@ fastify.post(
         zohoData.append("actionType", "TGVhZHM=");
         zohoData.append("returnURL", "null");
 
-        // Form fields mapped exactly as per your HTML
-        // Split Name into First and Last Name so Zoho displays it correctly
         const nameParts = (name || "Unknown").trim().split(" ");
         const lastName = nameParts.length > 1 ? nameParts.pop() : nameParts[0];
         const firstName = nameParts.length > 1 ? nameParts.join(" ") : "";
 
         zohoData.append("Last Name", lastName);
         if (firstName) zohoData.append("First Name", firstName);
-
         if (email) zohoData.append("Email", email);
         if (phone) zohoData.append("Phone", phone);
-
-        // Designation mapped to Service
         zohoData.append("Designation", service || "");
-
-        // Website mapped to Chargeable weight
         zohoData.append("Website", chargeableWt ? chargeableWt.toString() : "");
-
-        // Company mapped to Amount (totalPrice) - required by Zoho usually
         zohoData.append("Company", totalPrice ? totalPrice.toString() : "0");
-
-        // Since "First Name" was manually renamed to Destination in the HTML, it caused the Lead's Name to look weird.
-        // We'll put Destination and other package details into the Description field instead!
         const desc = `Destination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
         zohoData.append("Description", desc);
-
-        // Lead Source
         zohoData.append("Lead Source", "Web Download");
 
         await fetch("https://crm.zoho.in/crm/WebToLeadForm", {
           method: "POST",
           body: zohoData,
         });
-        console.log("Successfully sent quote enquiry to Zoho Web-to-Lead.");
       } catch (zohoError) {
         console.error("Failed to send quote enquiry to Zoho CRM:", zohoError);
       }
 
-      return {
-        success: true,
-        message: "Enquiry submitted successfully",
-        id: enquiry._id,
-      };
+      return reply.send({ success: true, enquiry });
     } catch (error) {
-      console.error("Quote enquiry submission error:", error);
+      console.error("QuoteEnquiry submission error:", error);
       return reply.status(500).send({ success: false, message: error.message });
     }
   },
 );
 
-// GET /admin/quote-enquiries  — list all, newest first
-fastify.get("/admin/quote-enquiries", async (request, reply) => {
+// ============================================================
+// MANVI COURIER SHIPMENT API ROUTES
+// ============================================================
+
+fastify.post("/shipment/order-create", async (request, reply) => {
   try {
-    const { status, page = 1, limit = 50 } = request.query;
-    const filter = status && status !== "all" ? { status } : {};
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const payload = request.body;
 
-    const [enquiries, total] = await Promise.all([
-      QuoteEnquiry.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit))
-        .lean(),
-      QuoteEnquiry.countDocuments(filter),
-    ]);
+    if (!payload.Awbno) {
+      const timestamp = Date.now().toString().slice(-8);
+      const randomDigit = Math.floor(100 + Math.random() * 900);
+      payload.Awbno = `AWB${timestamp}${randomDigit}`;
+    }
 
-    return { success: true, data: enquiries, total, page: parseInt(page) };
-  } catch (error) {
-    return reply.status(500).send({ success: false, message: error.message });
-  }
-});
-
-// GET /admin/quote-enquiries/stats  — counts by status
-fastify.get("/admin/quote-enquiries/stats", async (request, reply) => {
-  try {
-    const [total, newCount, contacted, converted, closed] = await Promise.all([
-      QuoteEnquiry.countDocuments(),
-      QuoteEnquiry.countDocuments({ status: "new" }),
-      QuoteEnquiry.countDocuments({ status: "contacted" }),
-      QuoteEnquiry.countDocuments({ status: "converted" }),
-      QuoteEnquiry.countDocuments({ status: "closed" }),
-    ]);
-    return {
-      success: true,
-      data: { total, new: newCount, contacted, converted, closed },
-    };
-  } catch (error) {
-    return reply.status(500).send({ success: false, message: error.message });
-  }
-});
-
-// GET /admin/quote-enquiries/:id  — single enquiry
-fastify.get("/admin/quote-enquiries/:id", async (request, reply) => {
-  try {
-    const enquiry = await QuoteEnquiry.findById(request.params.id).lean();
-    if (!enquiry)
-      return reply.status(404).send({ success: false, message: "Not found" });
-    return { success: true, data: enquiry };
-  } catch (error) {
-    return reply.status(500).send({ success: false, message: error.message });
-  }
-});
-
-// PUT /admin/quote-enquiries/:id  — update status / notes
-fastify.put("/admin/quote-enquiries/:id", async (request, reply) => {
-  try {
-    const { status, notes } = request.body;
-    const enquiry = await QuoteEnquiry.findByIdAndUpdate(
-      request.params.id,
+    const response = await fetch(
+      "http://api.manvicourier.com/api/shipment/order_create",
       {
-        ...(status && { status }),
-        ...(notes !== undefined && { notes }),
-        updatedAt: new Date(),
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       },
-      { new: true },
-    ).lean();
-    if (!enquiry)
-      return reply.status(404).send({ success: false, message: "Not found" });
-    return { success: true, data: enquiry };
+    );
+
+    const manviResult = await response.json().catch(() => ({ Status: true }));
+
+    try {
+      const enquiry = new QuoteEnquiry({
+        name:
+          payload.Sender?.SenderName ||
+          payload.Sender?.SenderContactPerson ||
+          "Customer",
+        phone: payload.Sender?.SenderTelephone || "",
+        email: payload.Sender?.SenderEmailId || "",
+        destination: payload.Receiver?.ReceiverCountry || "INTERNATIONAL",
+        zoningCountry: payload.Receiver?.ReceiverCity || "",
+        zipcode: payload.Receiver?.ReceiverZipcode || "",
+        actualWt: payload.PackageDetails?.PackageDetail?.[0]?.ActualWeight || 0,
+        volWt: 0,
+        chargeableWt:
+          payload.PackageDetails?.PackageDetail?.[0]?.ActualWeight || 0,
+        service: payload.ServiceDetails?.ServiceName || "Express",
+        network: payload.ServiceDetails?.NetworkCode || "DHL",
+        totalPrice: payload.FreightDetails?.NetTotal || 0,
+        status: "BOOKED",
+        notes: `AWB: ${payload.Awbno} | Manvi API Response: ${JSON.stringify(manviResult)}`,
+      });
+      await enquiry.save();
+    } catch (dbErr) {
+      console.error("Failed to save shipment to QuoteEnquiry:", dbErr.message);
+    }
+
+    try {
+      await Shipment.findOneAndUpdate(
+        { awbNo: payload.Awbno },
+        {
+          $setOnInsert: {
+            awbNo: payload.Awbno,
+            accountCode: payload.AccountCode || "GUEST",
+            customerName:
+              payload.Sender?.SenderName ||
+              payload.Sender?.SenderContactPerson ||
+              "Customer",
+            destination: payload.Receiver?.ReceiverCountry || "INTERNATIONAL",
+            shipper: payload.Sender,
+            receiver: payload.Receiver,
+            service: payload.ServiceDetails?.ServiceName || "Express",
+            network: payload.ServiceDetails?.NetworkCode || "DHL",
+            chargeableWt:
+              payload.PackageDetails?.PackageDetail?.[0]?.ActualWeight || 0,
+            invoiceNo: payload.AdditionalDetails?.InvoiceNo || "",
+            invoiceDate: payload.AdditionalDetails?.InvoiceDate || new Date(),
+            products: (payload.AdditionalDetails?.ProductDetails || []).map(
+              (p, idx) => ({
+                boxNo: p.BoxNo || String(idx + 1),
+                description: p.Description || "",
+                hsnCode: p.HSNCode || "",
+                unitType: p.UnitType || "PCS",
+                qty: p.Qty || 1,
+                unitRate: p.UnitRate || 0,
+                pieceWt: p.PieceWt || 0,
+              }),
+            ),
+            basicAmt: payload.FreightDetails?.BasicAmount || 0,
+            cgstAmt: payload.FreightDetails?.CGST || 0,
+            sgstAmt: payload.FreightDetails?.SGST || 0,
+            igstAmt: payload.FreightDetails?.IGST || 0,
+            totalAmt: payload.FreightDetails?.NetTotal || 0,
+            status: "BOOKED",
+            source: "Website",
+            manviResponse: manviResult,
+            events: [
+              {
+                eventDescription: "Order Confirmed",
+                location: payload.Receiver?.ReceiverCountry || "",
+              },
+            ],
+          },
+        },
+        { upsert: true, new: true },
+      );
+    } catch (dbErr) {
+      console.error("Failed to upsert Shipment record:", dbErr.message);
+    }
+
+    return reply.send({
+      success: true,
+      awbno: payload.Awbno,
+      data: manviResult,
+    });
   } catch (error) {
+    console.error("MANVI Order Create error:", error);
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// DELETE /admin/quote-enquiries/:id
-fastify.delete("/admin/quote-enquiries/:id", async (request, reply) => {
+fastify.post("/shipment/order-update", async (request, reply) => {
   try {
-    const enquiry = await QuoteEnquiry.findByIdAndDelete(request.params.id);
-    if (!enquiry)
-      return reply.status(404).send({ success: false, message: "Not found" });
-    return { success: true, message: "Deleted successfully" };
+    const payload = request.body;
+
+    if (!payload.Awbno) {
+      return reply.status(400).send({
+        success: false,
+        message: "Awbno is required for update",
+      });
+    }
+
+    console.log(`[Manvi API] Updating shipment: ${payload.Awbno}`);
+
+    const manviRes = await fetch(
+      "http://api.manvicourier.com/api/shipment/order_update",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    const manviResult = await manviRes.json().catch(() => ({ Status: true }));
+
+    console.log(
+      `[Manvi API] Update response:`,
+      JSON.stringify(manviResult, null, 2),
+    );
+
+    if (manviResult.Status === true) {
+      try {
+        const updateData = {};
+
+        if (payload.Receiver) {
+          updateData.receiver = {
+            receiverName: payload.Receiver.ReceiverName,
+            receiverPhone: payload.Receiver.ReceiverTelephone || "",
+            receiverEmail: payload.Receiver.ReceiverEmailid || "",
+            receiverAddress: payload.Receiver.ReceiverAddressLine1 || "",
+            receiverCity: payload.Receiver.ReceiverCity || "",
+            receiverState: payload.Receiver.ReceiverState || "",
+            receiverZipcode: payload.Receiver.ReceiverZipcode || "",
+            receiverCountry: payload.Receiver.ReceiverCountry || "",
+          };
+        }
+
+        if (payload.Sender) {
+          updateData.shipper = {
+            shipperName: payload.Sender.SenderName || "",
+            shipperPhone: payload.Sender.SenderTelephone || "",
+            shipperEmail: payload.Sender.SenderEmailId || "",
+            shipperAddress: payload.Sender.SenderAddressLine1 || "",
+            shipperCity: payload.Sender.SenderCity || "",
+            shipperState: payload.Sender.SenderState || "",
+            shipperPincode: payload.Sender.SenderPincode || "",
+          };
+        }
+
+        if (payload.FreightDetails) {
+          updateData.basicAmt = payload.FreightDetails.BasicAmount || 0;
+          updateData.cgstAmt = payload.FreightDetails.CGST || 0;
+          updateData.sgstAmt = payload.FreightDetails.SGST || 0;
+          updateData.igstAmt = payload.FreightDetails.IGST || 0;
+          updateData.totalAmt = payload.FreightDetails.NetTotal || 0;
+        }
+
+        if (payload.AdditionalDetails) {
+          updateData.invoiceNo = payload.AdditionalDetails.InvoiceNo || "";
+          updateData.invoiceDate =
+            payload.AdditionalDetails.InvoiceDate || new Date();
+          updateData.termsOfSale = payload.AdditionalDetails.TermsOfSale || "";
+          updateData.reasonForExport =
+            payload.AdditionalDetails.ReasonForExport || "";
+        }
+
+        if (payload.ServiceDetails) {
+          updateData.service = payload.ServiceDetails.ServiceName || "";
+          updateData.network = payload.ServiceDetails.NetworkCode || "";
+        }
+
+        updateData.$push = {
+          events: {
+            eventDescription: "Shipment Updated",
+            eventDate: new Date(),
+            location: payload.Receiver?.ReceiverCountry || "",
+          },
+        };
+
+        const updatedShipment = await Shipment.findOneAndUpdate(
+          { awbNo: payload.Awbno },
+          updateData,
+          { new: true, runValidators: true },
+        );
+
+        if (updatedShipment) {
+          console.log(`[Manvi API] Local shipment updated: ${payload.Awbno}`);
+        }
+      } catch (dbErr) {
+        console.error("Failed to update local shipment record:", dbErr.message);
+      }
+    }
+
+    return reply.send({
+      success: manviResult.Status === true,
+      awbno: payload.Awbno,
+      data: manviResult,
+      message:
+        manviResult.Status === true
+          ? "Shipment updated successfully"
+          : "Update failed",
+    });
   } catch (error) {
+    console.error("MANVI Order Update error:", error);
     return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.post("/shipment/event-push", async (request, reply) => {
+  try {
+    const payload = request.body;
+
+    if (!payload.Awbno) {
+      return reply.status(400).send({
+        success: false,
+        message: "Awbno is required for event push",
+      });
+    }
+
+    if (!payload.EventCode || !payload.EventDescription) {
+      return reply.status(400).send({
+        success: false,
+        message: "EventCode and EventDescription are required",
+      });
+    }
+
+    console.log(`[Manvi API] Pushing event for shipment: ${payload.Awbno}`);
+    console.log(
+      `[Manvi API] Event: ${payload.EventCode} - ${payload.EventDescription}`,
+    );
+
+    if (payload.EventDate) {
+      if (payload.EventDate.length === 10 && payload.EventDate.includes("-")) {
+        const time = payload.EventTime || "00:00:00";
+        payload.EventDate = `${payload.EventDate}T${time}`;
+      }
+    } else {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const day = String(now.getDate()).padStart(2, "0");
+      const hours = String(now.getHours()).padStart(2, "0");
+      const minutes = String(now.getMinutes()).padStart(2, "0");
+      const seconds = String(now.getSeconds()).padStart(2, "0");
+      payload.EventDate = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+    }
+
+    const manviRes = await fetch(
+      "http://api.manvicourier.com/api/shipment/event_push",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    const manviResult = await manviRes.json().catch(() => ({ Status: true }));
+
+    console.log(
+      `[Manvi API] Event push response:`,
+      JSON.stringify(manviResult, null, 2),
+    );
+
+    if (manviResult.Status === true) {
+      try {
+        const eventData = {
+          eventCode: payload.EventCode || "",
+          eventDescription: payload.EventDescription || "Event pushed",
+          eventDate: payload.EventDate
+            ? new Date(payload.EventDate)
+            : new Date(),
+          eventTime: payload.EventTime || "",
+          location: payload.Location || "",
+        };
+
+        const updateData = {
+          $push: { events: eventData },
+        };
+
+        if (payload.EventCode === "DL") {
+          updateData.status = "DELIVERED";
+        } else if (payload.EventCode === "CN") {
+          updateData.status = "CANCELLED";
+        }
+
+        const updatedShipment = await Shipment.findOneAndUpdate(
+          { awbNo: payload.Awbno },
+          updateData,
+          { new: true, runValidators: true },
+        );
+
+        if (updatedShipment) {
+          console.log(
+            `[Manvi API] Local shipment event added: ${payload.Awbno}`,
+          );
+        } else {
+          console.log(`[Manvi API] Local shipment not found: ${payload.Awbno}`);
+        }
+      } catch (dbErr) {
+        console.error("Failed to update local shipment record:", dbErr.message);
+      }
+    }
+
+    return reply.send({
+      success: manviResult.Status === true,
+      awbno: payload.Awbno,
+      data: manviResult,
+      message:
+        manviResult.Status === true
+          ? "Event pushed successfully"
+          : "Event push failed",
+    });
+  } catch (error) {
+    console.error("MANVI Event Push error:", error);
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/shipment/tracking/:awb", async (request, reply) => {
+  const { awb } = request.params;
+  try {
+    const response = await fetch(
+      `http://api.manvicourier.com/api/gettracking/${awb}`,
+      { headers: { "Content-Type": "application/json" } },
+    );
+    const data = await response.json();
+    if (data?.Status && data?.Data) return reply.send(data);
+    throw new Error("External tracking returned no data");
+  } catch (externalErr) {
+    try {
+      const shipment = await Shipment.findOne({ awbNo: awb }).lean();
+      if (!shipment) {
+        return reply.send({
+          Status: false,
+          Data: { ErrorMessage: "Tracking details not found" },
+        });
+      }
+      const events = [...(shipment.events || [])]
+        .sort((a, b) => new Date(b.eventDate) - new Date(a.eventDate))
+        .map((e) => ({
+          EventCode: e.eventCode || "",
+          EventDescription: e.eventDescription,
+          EventDate: e.eventDate,
+          EventTime: e.eventTime || "",
+          Location: e.location || "",
+        }));
+      return reply.send({
+        Status: true,
+        Data: {
+          Awbno: shipment.awbNo,
+          Destination: shipment.destination,
+          Shipdate: shipment.createdAt,
+          ForwardingNo: shipment.forwardingNo || "",
+          Forwarder: shipment.forwarder || shipment.network || "",
+          Consignee:
+            shipment.receiver?.receiverName ||
+            shipment.receiver?.ReceiverName ||
+            "",
+          Events: events,
+        },
+      });
+    } catch (localErr) {
+      console.error(
+        "MANVI Tracking error:",
+        externalErr.message,
+        localErr.message,
+      );
+      return reply.status(500).send({
+        Status: false,
+        Data: { ErrorMessage: "Unable to fetch tracking details" },
+      });
+    }
   }
 });
 
@@ -2095,17 +2111,13 @@ fastify.delete("/admin/quote-enquiries/:id", async (request, reply) => {
 // SERVICE AREA ROUTES
 // ============================================================
 
-// ── PUBLIC: search service areas by city / state / pincode ──
 fastify.get("/service-areas/search", async (request, reply) => {
   try {
     const q = String(request.query.q || "").trim();
-    if (!q) {
+    if (!q)
       return reply
         .status(400)
         .send({ success: false, message: "Query parameter 'q' is required" });
-    }
-
-    // Build a flexible OR query
     const regex = new RegExp(q, "i");
     const areas = await ServiceArea.find({
       isActive: true,
@@ -2114,32 +2126,27 @@ fastify.get("/service-areas/search", async (request, reply) => {
       .select("-__v -createdAt -updatedAt")
       .limit(20)
       .lean();
-
     return { success: true, data: areas, count: areas.length };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// ── PUBLIC: get all active service areas (for the dropdown / list) ──
 fastify.get("/service-areas", async (request, reply) => {
   try {
     const cached = apiCache.get("service-areas-public");
     if (cached) return { success: true, data: cached };
-
     const areas = await ServiceArea.find({ isActive: true })
       .sort({ country: 1, state: 1, city: 1 })
       .select("-__v")
       .lean();
-
-    apiCache.set("service-areas-public", areas, 600); // 10 min cache
+    apiCache.set("service-areas-public", areas, 600);
     return { success: true, data: areas };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
 });
 
-// ── ADMIN: get ALL service areas (including inactive) ──
 fastify.get("/admin/service-areas", async (request, reply) => {
   try {
     const { active, country } = request.query;
@@ -2147,7 +2154,6 @@ fastify.get("/admin/service-areas", async (request, reply) => {
     if (active === "true") filter.isActive = true;
     if (active === "false") filter.isActive = false;
     if (country) filter.country = new RegExp(country, "i");
-
     const areas = await ServiceArea.find(filter)
       .sort({ country: 1, state: 1, city: 1 })
       .lean();
@@ -2157,7 +2163,6 @@ fastify.get("/admin/service-areas", async (request, reply) => {
   }
 });
 
-// ── ADMIN: get single service area ──
 fastify.get("/admin/service-areas/:id", async (request, reply) => {
   try {
     const area = await ServiceArea.findById(request.params.id).lean();
@@ -2171,7 +2176,6 @@ fastify.get("/admin/service-areas/:id", async (request, reply) => {
   }
 });
 
-// ── ADMIN: create service area ──
 fastify.post("/admin/service-areas", async (request, reply) => {
   try {
     const area = new ServiceArea(request.body);
@@ -2193,7 +2197,6 @@ fastify.post("/admin/service-areas", async (request, reply) => {
   }
 });
 
-// ── ADMIN: update service area ──
 fastify.put("/admin/service-areas/:id", async (request, reply) => {
   try {
     const area = await ServiceArea.findByIdAndUpdate(
@@ -2216,7 +2219,6 @@ fastify.put("/admin/service-areas/:id", async (request, reply) => {
   }
 });
 
-// ── ADMIN: delete service area ──
 fastify.delete("/admin/service-areas/:id", async (request, reply) => {
   try {
     const area = await ServiceArea.findByIdAndDelete(request.params.id);
@@ -2231,7 +2233,6 @@ fastify.delete("/admin/service-areas/:id", async (request, reply) => {
   }
 });
 
-// ── ADMIN: bulk toggle active status ──
 fastify.put("/admin/service-areas/:id/toggle", async (request, reply) => {
   try {
     const area = await ServiceArea.findById(request.params.id);
@@ -2252,7 +2253,6 @@ fastify.put("/admin/service-areas/:id/toggle", async (request, reply) => {
   }
 });
 
-// ── ADMIN: stats ──
 fastify.get("/admin/service-areas/stats", async (request, reply) => {
   try {
     const [total, active, pickupOnly, dropoffOnly, both] = await Promise.all([
@@ -2283,6 +2283,866 @@ fastify.get("/admin/service-areas/stats", async (request, reply) => {
   }
 });
 
+// ============================================================
+// CUSTOMER PORTAL — REGISTRATION / LOGIN / APPROVAL
+// ============================================================
+
+function generateCustomerId() {
+  return `M5C-CUST-${Math.floor(100000 + Math.random() * 900000)}`;
+}
+
+fastify.post(
+  "/customer/register",
+  { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+  async (request, reply) => {
+    try {
+      const { name, email, phone, company, address, gstin, password } =
+        request.body;
+      if (!name || !email || !phone || !password) {
+        return reply.status(400).send({
+          success: false,
+          message: "Name, email, phone and password are required",
+        });
+      }
+      const existing = await Customer.findOne({
+        email: email.toLowerCase().trim(),
+      });
+      if (existing) {
+        return reply.status(400).send({
+          success: false,
+          message: "Email address is already registered.",
+        });
+      }
+      const passwordHash = await bcrypt.hash(password, 10);
+      const customer = await Customer.create({
+        customerId: generateCustomerId(),
+        name,
+        email: email.toLowerCase().trim(),
+        phone,
+        company: company || "N/A",
+        address: address || "",
+        gstin: gstin || "N/A",
+        passwordHash,
+        status: "PENDING",
+        balance: 50000,
+      });
+
+      sendEmail(
+        email,
+        "Registration Received - Manvi International",
+        `<p>Hi ${name},</p><p>Your customer portal registration has been received and is pending admin approval. You'll be notified once approved.</p>`,
+      ).catch(() => {});
+
+      return reply.send({
+        success: true,
+        message: "Registration submitted successfully! Pending admin approval.",
+        customer: {
+          id: customer.customerId,
+          name: customer.name,
+          email: customer.email,
+          status: customer.status,
+        },
+      });
+    } catch (error) {
+      if (error.code === 11000) {
+        return reply.status(400).send({
+          success: false,
+          message: "Email address is already registered.",
+        });
+      }
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+  },
+);
+
+fastify.post("/customer/login", async (request, reply) => {
+  try {
+    const { email, password } = request.body;
+    if (!email || !password) {
+      return reply
+        .status(400)
+        .send({ success: false, message: "Email and password are required" });
+    }
+    const customer = await Customer.findOne({
+      email: email.toLowerCase().trim(),
+    });
+    if (!customer) {
+      return reply.status(404).send({
+        success: false,
+        message: "User account not found. Please register first.",
+      });
+    }
+    const match = await bcrypt.compare(password, customer.passwordHash);
+    if (!match) {
+      return reply
+        .status(401)
+        .send({ success: false, message: "Invalid email or password." });
+    }
+    if (customer.status !== "APPROVED") {
+      return reply.status(403).send({
+        success: false,
+        message: `Account status is ${customer.status}. Admin approval is required before logging in.`,
+        status: customer.status,
+      });
+    }
+    return reply.send({
+      success: true,
+      message: "Login successful",
+      customer: {
+        id: customer.customerId,
+        name: customer.name,
+        email: customer.email,
+        phone: customer.phone,
+        company: customer.company,
+        gstin: customer.gstin,
+        address: customer.address,
+        status: customer.status,
+        balance: customer.balance,
+      },
+    });
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/admin/customers", async (request, reply) => {
+  try {
+    const { status } = request.query;
+    const filter = status && status !== "ALL" ? { status } : {};
+    const customers = await Customer.find(filter)
+      .sort({ createdAt: -1 })
+      .select("-passwordHash")
+      .lean();
+    return {
+      success: true,
+      data: customers.map((c) => ({ ...c, id: c.customerId })),
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/admin/customers/stats", async (request, reply) => {
+  try {
+    const [total, pending, approved, rejected] = await Promise.all([
+      Customer.countDocuments(),
+      Customer.countDocuments({ status: "PENDING" }),
+      Customer.countDocuments({ status: "APPROVED" }),
+      Customer.countDocuments({ status: "REJECTED" }),
+    ]);
+    return { success: true, data: { total, pending, approved, rejected } };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.post("/admin/customers/status", async (request, reply) => {
+  try {
+    const { customerId, status } = request.body;
+    if (!customerId || !["APPROVED", "REJECTED", "PENDING"].includes(status)) {
+      return reply.status(400).send({
+        success: false,
+        message: "Valid customerId and status are required",
+      });
+    }
+    const customer = await Customer.findOneAndUpdate(
+      { customerId },
+      { status },
+      { new: true },
+    ).select("-passwordHash");
+    if (!customer) {
+      return reply
+        .status(404)
+        .send({ success: false, message: "Customer not found" });
+    }
+
+    const statusMsg =
+      status === "APPROVED"
+        ? "Your customer portal account has been approved! You can now log in and book shipments."
+        : status === "REJECTED"
+          ? "Your customer portal registration was not approved. Please contact support for details."
+          : "Your account status has been updated.";
+    sendEmail(
+      customer.email,
+      `Manvi Customer Portal - Account ${status}`,
+      `<p>Hi ${customer.name},</p><p>${statusMsg}</p>`,
+    ).catch(() => {});
+
+    return {
+      success: true,
+      message: `Customer ${customerId} status updated to ${status}`,
+      data: customer,
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ============================================================
+// PORTAL — SHIPMENT BOOKING
+// ============================================================
+
+fastify.post("/portal/create-shipment", async (request, reply) => {
+  try {
+    const {
+      accountCode,
+      customerName,
+      sector,
+      destination,
+      shipper,
+      receiver,
+      boxes,
+      contentDescription,
+      invoiceValue,
+      currency,
+      invoiceNo,
+      invoiceDate,
+      termsOfSale,
+      reasonForExport,
+      service,
+      network,
+      chargeableWt,
+      basicAmt,
+      cgstAmt,
+      sgstAmt,
+      igstAmt,
+      totalAmt,
+    } = request.body;
+
+    const safeAccountCode = String(accountCode || "1270").trim();
+
+    if (!receiver?.receiverName || !service) {
+      return reply.status(400).send({
+        success: false,
+        message: "Missing required shipment fields",
+      });
+    }
+
+    const customer = (await Customer.findOne({
+      customerId: safeAccountCode,
+    }).lean()) || {
+      customerId: safeAccountCode,
+      balance: 0,
+      status: "APPROVED",
+    };
+
+    const accountBalance = Number(customer.balance || 0);
+    const total = Number(totalAmt || 0);
+    const isHold = total > accountBalance;
+
+    const timestamp = Date.now().toString().slice(-8);
+    const awbForManvi = `AWB${timestamp}${Math.floor(100 + Math.random() * 900)}`;
+
+    const tempAwbNo = `M5C-TEMP-${timestamp}${Math.floor(100 + Math.random() * 900)}`;
+    const genInvoiceNo =
+      invoiceNo || `INV-${new Date().getFullYear()}-${timestamp}`;
+
+    const receiverCountryCode = getCountryCode(
+      receiver?.receiverCountry || destination || "INTERNATIONAL",
+    );
+    const destinationCode = getCountryCode(
+      destination || receiver?.receiverCountry || "INTERNATIONAL",
+    );
+
+    const productDetails = (boxes || []).map((b, idx) => ({
+      BoxNo: String(idx + 1),
+      Description:
+        b.productDescription || contentDescription || "General Merchandise",
+      HSNCode: b.hsnCode || "",
+      HTSCode: b.hsnCode || "",
+      UnitType: "PCS",
+      Qty: Number(b.qty) || 1,
+      UnitRate: Number(b.unitRate) || 0,
+      ShipPieceIGST: 0,
+      PieceWt: Number(b.weightKg) || 0,
+    }));
+
+    const basic = Number(basicAmt) || 0;
+    const cgst = Number(cgstAmt) || 0;
+    const sgst = Number(sgstAmt) || 0;
+    const igst = Number(igstAmt) || 0;
+
+    const orderPayload = {
+      Awbno: awbForManvi,
+      AccountCode: safeAccountCode,
+      AccountName: customerName || shipper?.shipperName || "Default Account",
+      Origin: "DEL",
+      PaymentType: "Credit",
+      ShipDate: new Date().toISOString(),
+      Sender: {
+        SenderName: shipper?.shipperName,
+        SenderContactPerson: shipper?.shipperName,
+        SenderAddressLine1: shipper?.shipperAddress,
+        SenderPincode: shipper?.shipperPincode,
+        SenderCity: shipper?.shipperCity,
+        SenderState: shipper?.shipperState,
+        SenderTelephone: shipper?.shipperPhone,
+        SenderEmailId: shipper?.shipperEmail,
+        KYCType: "GSTIN",
+        KYCNo: shipper?.shipperGstin || "N/A",
+      },
+      Receiver: {
+        ReceiverName: receiver?.receiverName,
+        ReceiverContactPerson: receiver?.receiverName,
+        ReceiverAddressLine1: receiver?.receiverAddress,
+        ReceiverZipcode: receiver?.receiverZipcode,
+        ReceiverCity: receiver?.receiverCity,
+        ReceiverState: receiver?.receiverState || receiver?.receiverCity,
+        ReceiverCountry: receiverCountryCode,
+        ReceiverTelephone: receiver?.receiverPhone,
+        ReceiverEmailid: receiver?.receiverEmail,
+      },
+      ServiceDetails: {
+        ServiceCode: service,
+        ServiceName: service,
+        Forwarder: network || "SELF",
+        NetworkCode: network || "SELF",
+        NetworkName: network || "Manvi Network",
+        NetworkNo: "01",
+        GoodsType: "NDOX",
+        PackageType: "PACKAGE",
+      },
+      PackageDetails: {
+        PackageDetail: (boxes || []).map((b) => ({
+          Length: Number(b.lengthCm) || 10,
+          Width: Number(b.widthCm) || 10,
+          Height: Number(b.heightCm) || 10,
+          ActualWeight: Number(b.weightKg) || 1,
+        })),
+      },
+      AdditionalDetails: {
+        IsThirdParty: false,
+        ProductDetails: productDetails,
+        InvoiceCurrency: currency || "USD",
+        InvoiceNo: genInvoiceNo,
+        InvoiceDate: invoiceDate
+          ? new Date(invoiceDate).toISOString()
+          : new Date().toISOString(),
+        TermsOfSale: termsOfSale || "DAP",
+        ReasonForExport: reasonForExport || "Sale",
+        FreightCharge: basic,
+        InsuranceCharge: 0,
+        CSB_Type: "CSB 4",
+        CustomerRefNo: tempAwbNo,
+        DeliveryConfirmation: "SIGNATURE",
+        DutyTax: "DDU",
+        DutiesAccountNo: "",
+        TransactionId: `TXN${timestamp}`,
+        IECNo: "",
+        ADCode: "",
+        BankType: "P",
+        NFEI: false,
+        Ecom: false,
+        MEIS: false,
+        BankAccount: "",
+        ProductType: "Commercial",
+        BoundUT: "NA",
+        IGSTAmount: igst,
+        IGSTPaid: igst > 0 ? "Yes" : "No",
+        ShipperImage: "",
+        ShipperKYC: "",
+        FileName: "",
+      },
+      FreightDetails: {
+        BasicAmount: basic,
+        FuelPercentage: 0,
+        Fuel: 0,
+        MisFuel: 0,
+        Misc: 0,
+        Demand: 0,
+        GreenSuch: 0,
+        Taxable: basic,
+        SGST: sgst,
+        CGST: cgst,
+        IGST: igst,
+        NTaxable: 0,
+        NetTotal: total,
+      },
+    };
+
+    let manviResult = { Status: true };
+    let awbNoFromManvi = null;
+
+    try {
+      const manviRes = await fetch(
+        "http://api.manvicourier.com/api/shipment/order_create",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(orderPayload),
+        },
+      );
+
+      manviResult = await manviRes.json().catch(() => ({ Status: true }));
+
+      if (manviResult) {
+        awbNoFromManvi =
+          manviResult?.Data?.AwbNo ||
+          manviResult?.Data?.Awbno ||
+          manviResult?.Data?.awbNo ||
+          manviResult?.data?.AwbNo ||
+          manviResult?.data?.Awbno ||
+          manviResult?.data?.awbNo ||
+          manviResult?.AwbNo ||
+          manviResult?.Awbno ||
+          manviResult?.awbNo ||
+          null;
+      }
+    } catch (manviErr) {
+      console.error(
+        "MANVI order-create call failed (shipment still saved locally):",
+        manviErr.message,
+      );
+    }
+
+    const finalAwbNo = awbNoFromManvi || awbForManvi;
+
+    const shipment = await Shipment.create({
+      awbNo: finalAwbNo,
+      accountCode: safeAccountCode,
+      customerName: customerName || shipper?.shipperName || "Default Account",
+      sector,
+      destination: destinationCode,
+      shipper,
+      receiver: {
+        ...receiver,
+        receiverCountry: receiverCountryCode,
+      },
+      boxes,
+      products: productDetails.map((p) => ({
+        boxNo: p.BoxNo,
+        description: p.Description,
+        hsnCode: p.HSNCode,
+        unitType: p.UnitType,
+        qty: p.Qty,
+        unitRate: p.UnitRate,
+        pieceWt: p.PieceWt,
+      })),
+      contentDescription,
+      invoiceValue,
+      invoiceNo: genInvoiceNo,
+      invoiceDate: invoiceDate ? new Date(invoiceDate) : new Date(),
+      termsOfSale: termsOfSale || "DAP",
+      reasonForExport: reasonForExport || "Sale",
+      currency,
+      service,
+      network,
+      chargeableWt,
+      basicAmt: basic,
+      cgstAmt: cgst,
+      sgstAmt: sgst,
+      igstAmt: igst,
+      totalAmt: total,
+      status: isHold ? "ON_HOLD" : "BOOKED",
+      isHold,
+      source: "Portal",
+      manviResponse: manviResult,
+      events: [
+        {
+          eventDescription: isHold
+            ? "Order Received — On Hold"
+            : "Order Confirmed",
+          location: destinationCode,
+        },
+      ],
+    });
+
+    if (!isHold && customer?.customerId) {
+      if (customer?.balance !== undefined) {
+        await Customer.findOneAndUpdate(
+          { customerId: safeAccountCode },
+          {
+            $set: {
+              balance: Math.max(0, Number(customer.balance || 0) - total),
+            },
+          },
+        );
+      }
+    }
+
+    return reply.send({
+      success: true,
+      message: isHold
+        ? "Shipment created but placed on hold — insufficient balance."
+        : "Shipment created successfully!",
+      booking: shipment,
+      awbNo: finalAwbNo,
+      isHold,
+      awbSource: awbNoFromManvi ? "manvi_api" : "local_generated",
+    });
+  } catch (error) {
+    console.error("Portal create-shipment error:", error);
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/portal/shipments", async (request, reply) => {
+  try {
+    const { accountCode } = request.query;
+    if (!accountCode)
+      return reply
+        .status(400)
+        .send({ success: false, message: "accountCode is required" });
+    const shipments = await Shipment.find({ accountCode })
+      .sort({ createdAt: -1 })
+      .lean();
+    return { success: true, data: shipments };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ============================================================
+// ADMIN — SHIPMENT / TRACKING CRUD
+// ============================================================
+
+fastify.post("/admin/shipments", async (request, reply) => {
+  try {
+    const body = request.body;
+    if (!body.awbNo) {
+      const timestamp = Date.now().toString().slice(-8);
+      body.awbNo = `M5C-${timestamp}${Math.floor(100 + Math.random() * 900)}`;
+    }
+    const existing = await Shipment.findOne({ awbNo: body.awbNo });
+    if (existing) {
+      return reply
+        .status(409)
+        .send({ success: false, message: `AWB ${body.awbNo} already exists` });
+    }
+    if (!body.events || body.events.length === 0) {
+      body.events = [
+        {
+          eventDescription: "Order Confirmed",
+          eventDate: new Date(),
+          location: body.destination || "",
+        },
+      ];
+    }
+    const shipment = await Shipment.create(body);
+    return reply.send({
+      success: true,
+      data: shipment,
+      message: "Shipment created successfully",
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return reply.status(409).send({
+        success: false,
+        message: "A shipment with this AWB already exists",
+      });
+    }
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/admin/shipments", async (request, reply) => {
+  try {
+    const { status, accountCode, q, page = 1, limit = 50 } = request.query;
+    const filter = {};
+    if (status && status !== "ALL") filter.status = status;
+    if (accountCode) filter.accountCode = accountCode;
+    if (q) {
+      const regex = new RegExp(q, "i");
+      filter.$or = [
+        { awbNo: regex },
+        { customerName: regex },
+        { destination: regex },
+      ];
+    }
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [shipments, total] = await Promise.all([
+      Shipment.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Shipment.countDocuments(filter),
+    ]);
+    return { success: true, data: shipments, total, page: parseInt(page) };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/admin/shipments/:awb", async (request, reply) => {
+  try {
+    const shipment = await Shipment.findOne({
+      awbNo: request.params.awb,
+    }).lean();
+    if (!shipment)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Shipment not found" });
+    return { success: true, data: shipment };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.put("/admin/shipments/:awb", async (request, reply) => {
+  try {
+    const { awbNo, events, ...rest } = request.body;
+    const shipment = await Shipment.findOneAndUpdate(
+      { awbNo: request.params.awb },
+      { ...rest, updatedAt: new Date() },
+      { new: true, runValidators: true },
+    );
+    if (!shipment)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Shipment not found" });
+    return {
+      success: true,
+      data: shipment,
+      message: "Shipment updated successfully",
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.delete("/admin/shipments/:awb", async (request, reply) => {
+  try {
+    const shipment = await Shipment.findOneAndDelete({
+      awbNo: request.params.awb,
+    });
+    if (!shipment)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Shipment not found" });
+    return { success: true, message: "Shipment deleted successfully" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.post("/admin/shipments/:awb/events", async (request, reply) => {
+  try {
+    const { eventCode, eventDescription, eventDate, eventTime, location } =
+      request.body;
+    if (!eventDescription) {
+      return reply
+        .status(400)
+        .send({ success: false, message: "eventDescription is required" });
+    }
+    const shipment = await Shipment.findOneAndUpdate(
+      { awbNo: request.params.awb },
+      {
+        $push: {
+          events: {
+            eventCode,
+            eventDescription,
+            eventDate: eventDate || new Date(),
+            eventTime,
+            location,
+          },
+        },
+      },
+      { new: true },
+    );
+    if (!shipment)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Shipment not found" });
+    return { success: true, data: shipment, message: "Event added" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.put("/admin/shipments/:awb/events/:eventId", async (request, reply) => {
+  try {
+    const shipment = await Shipment.findOne({ awbNo: request.params.awb });
+    if (!shipment)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Shipment not found" });
+    const event = shipment.events.id(request.params.eventId);
+    if (!event)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Event not found" });
+    Object.assign(event, request.body);
+    await shipment.save();
+    return { success: true, data: shipment, message: "Event updated" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.delete(
+  "/admin/shipments/:awb/events/:eventId",
+  async (request, reply) => {
+    try {
+      const shipment = await Shipment.findOneAndUpdate(
+        { awbNo: request.params.awb },
+        { $pull: { events: { _id: request.params.eventId } } },
+        { new: true },
+      );
+      if (!shipment)
+        return reply
+          .status(404)
+          .send({ success: false, message: "Shipment not found" });
+      return { success: true, data: shipment, message: "Event deleted" };
+    } catch (error) {
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+  },
+);
+
+// ============================================================
+// SEND SHIPMENT NOTIFICATION EMAIL - FIXED
+// ============================================================
+
+fastify.post("/api/send-shipment-email", async (request, reply) => {
+  try {
+    const { to, subject, html, shipmentData } = request.body;
+
+    console.log("[Email] 📧 Received request to send shipment notification");
+    console.log("[Email] 📋 To:", to);
+    console.log("[Email] 📋 Subject:", subject);
+    console.log("[Email] 📋 Has HTML:", !!html);
+
+    // Validate required fields
+    if (!to || !subject || !html) {
+      console.error("[Email] ❌ Missing required fields");
+      return reply.status(400).send({
+        success: false,
+        message: "Missing required fields: to, subject, html",
+      });
+    }
+
+    // Validate email format
+    if (!to.includes("@")) {
+      console.error(`[Email] ❌ Invalid email format: ${to}`);
+      return reply.status(400).send({
+        success: false,
+        message: "Invalid email format",
+      });
+    }
+
+    // Send email to the recipient
+    const result = await sendEmail(
+      to,
+      subject,
+      html,
+      process.env.SMTP_USER || "harmanjeet@m5clogs.com",
+    );
+
+    console.log("[Email] 📊 Send result:", result);
+
+    if (!result.success) {
+      console.error("[Email] ❌ Failed to send:", result.error);
+      return reply.status(500).send({
+        success: false,
+        message: "Failed to send email",
+        error: result.error,
+      });
+    }
+
+    // Send CC to admin if configured and different
+    if (process.env.ADMIN_EMAIL && process.env.ADMIN_EMAIL !== to) {
+      try {
+        console.log(`[Email] 📧 Sending CC to: ${process.env.ADMIN_EMAIL}`);
+        await sendEmail(
+          process.env.ADMIN_EMAIL,
+          `[CC] ${subject}`,
+          html,
+          process.env.SMTP_USER || "harmanjeet@m5clogs.com",
+        );
+        console.log("[Email] ✅ CC email sent successfully");
+      } catch (ccErr) {
+        console.error("[Email] ⚠️ CC email failed:", ccErr.message);
+        // Don't fail the main request if CC fails
+      }
+    }
+
+    return reply.send({
+      success: true,
+      message: "Email sent successfully",
+      messageId: result.messageId,
+    });
+  } catch (error) {
+    console.error("[Email] ❌ Send shipment email error:", error);
+    return reply.status(500).send({
+      success: false,
+      message: error.message || "Failed to send email",
+      error: error.message,
+    });
+  }
+});
+
+// ============================================================
+// TEST EMAIL ENDPOINT
+// ============================================================
+
+fastify.post("/api/test-email", async (request, reply) => {
+  try {
+    const { to = "info@manvicourier.com", subject, html } = request.body || {};
+
+    console.log("[Test Email] 📧 Testing email configuration...");
+
+    const testHtml =
+      html ||
+      `
+      <!DOCTYPE html>
+      <html>
+        <head><meta charset="UTF-8"></head>
+        <body>
+          <h2>📧 Email Configuration Test</h2>
+          <p>If you're receiving this email, your SMTP configuration is working correctly!</p>
+          <hr>
+          <p><strong>Time:</strong> ${new Date().toLocaleString()}</p>
+          <p><strong>Server:</strong> ${process.env.SMTP_HOST || "N/A"}</p>
+          <p><strong>User:</strong> ${process.env.SMTP_USER || "N/A"}</p>
+          <p><strong>Port:</strong> ${process.env.SMTP_PORT || "587"}</p>
+          <hr>
+          <p><small>Manvi Courier Portal - Automated Test</small></p>
+        </body>
+      </html>
+    `;
+
+    const result = await sendEmail(
+      to,
+      subject || "Test Email from Manvi Courier Portal",
+      testHtml,
+    );
+
+    return reply.send({
+      success: result.success,
+      message: result.success ? "Email sent successfully" : "Email failed",
+      messageId: result.messageId,
+      error: result.error,
+      config: {
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT,
+        user: process.env.SMTP_USER,
+        hasPassword: !!process.env.SMTP_PASS,
+      },
+    });
+  } catch (error) {
+    console.error("[Test Email] ❌ Error:", error);
+    return reply.status(500).send({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+fastify.get("/admin/shipments/stats/summary", async (request, reply) => {
+  try {
+    const [total, booked, hold, delivered] = await Promise.all([
+      Shipment.countDocuments(),
+      Shipment.countDocuments({ status: "BOOKED" }),
+      Shipment.countDocuments({ status: "ON_HOLD" }),
+      Shipment.countDocuments({ status: "DELIVERED" }),
+    ]);
+    return { success: true, data: { total, booked, hold, delivered } };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
 // ============= SERVER START =============
 
 const connectDB = async () => {
@@ -2296,25 +3156,18 @@ const connectDB = async () => {
   console.log(`MongoDB Connected: ${conn.connection.host}`);
 };
 
-// ─── NEWSLETTER SUBSCRIBE ────────────────────────────────────────────────────
-
-// POST /api/subscribe — save to MongoDB + sync to Brevo
 fastify.post("/api/subscribe", async (req, reply) => {
   const { email, firstName = "" } = req.body || {};
-
   if (!email || !email.includes("@")) {
     return reply.status(400).send({ success: false, error: "Invalid email" });
   }
-
   try {
-    // 1. Save to MongoDB (upsert so duplicates don't error)
     const subscriber = await Subscriber.findOneAndUpdate(
       { email: email.toLowerCase().trim() },
       { email: email.toLowerCase().trim(), firstName, active: true },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
 
-    // 2. Sync to Brevo
     if (process.env.BREVO_API_KEY) {
       try {
         const brevoRes = await fetch("https://api.brevo.com/v3/contacts", {
@@ -2330,7 +3183,6 @@ fastify.post("/api/subscribe", async (req, reply) => {
             updateEnabled: true,
           }),
         });
-
         if (brevoRes.ok || brevoRes.status === 204) {
           await Subscriber.findByIdAndUpdate(subscriber._id, {
             brevoSynced: true,
@@ -2348,7 +3200,6 @@ fastify.post("/api/subscribe", async (req, reply) => {
   }
 });
 
-// GET /api/subscribers — admin: list all subscribers
 fastify.get("/api/subscribers", async (req, reply) => {
   try {
     const subscribers = await Subscriber.find({ active: true })
@@ -2364,7 +3215,6 @@ fastify.get("/api/subscribers", async (req, reply) => {
   }
 });
 
-// POST /admin/newsletter/send — create & send a Brevo email campaign to list 3
 fastify.post("/admin/newsletter/send", async (req, reply) => {
   const { subject, htmlContent, senderName, senderEmail } = req.body || {};
 
@@ -2374,7 +3224,6 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
       error: "subject, htmlContent, and senderEmail are required",
     });
   }
-
   if (!process.env.BREVO_API_KEY) {
     return reply
       .status(500)
@@ -2382,7 +3231,6 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
   }
 
   try {
-    // 1. Create the campaign
     const createRes = await fetch("https://api.brevo.com/v3/emailCampaigns", {
       method: "POST",
       headers: {
@@ -2402,7 +3250,6 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
     const createData = await createRes.json();
 
     if (!createRes.ok) {
-      console.error("Brevo create campaign error:", createData);
       return reply.status(500).send({
         success: false,
         error: createData.message || "Failed to create campaign in Brevo",
@@ -2411,7 +3258,6 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
 
     const campaignId = createData.id;
 
-    // 2. Send immediately
     const sendRes = await fetch(
       `https://api.brevo.com/v3/emailCampaigns/${campaignId}/sendNow`,
       {
@@ -2422,7 +3268,6 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
 
     if (!sendRes.ok) {
       const sendData = await sendRes.json().catch(() => ({}));
-      console.error("Brevo send error:", sendData);
       return reply.status(500).send({
         success: false,
         error: sendData.message || "Campaign created but failed to send",
@@ -2439,8 +3284,6 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
     return reply.status(500).send({ success: false, error: "Server error" });
   }
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 const start = async () => {
   try {

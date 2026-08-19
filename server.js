@@ -276,6 +276,7 @@ fastify.register(fastifyCors, {
       cleanFrontendUrl === "*" ||
       originClean === cleanFrontendUrl ||
       originClean === "https://manvi-website.vercel.app" ||
+      originClean === "https://manvi-uat.netlify.app" ||
       /https?:\/\/localhost(:\d+)?$/.test(originClean) ||
       /https?:\/\/127\.0\.0\.1(:\d+)?$/.test(originClean)
     ) {

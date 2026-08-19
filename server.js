@@ -313,25 +313,6 @@ fastify.get("/api/health", async (request, reply) => {
   return { status: "ok", service: "manvi-node-server", timestamp: new Date().toISOString() };
 });
 
-// ============= EMAIL HELPER FUNCTION =============
-async function sendEmail(to, subject, html, from = process.env.SMTP_USER) {
-  try {
-    const mailOptions = {
-      from: `"Manvi International" <${from}>`,
-      to,
-      subject,
-      html,
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    console.log("Email sent successfully:", info.messageId);
-    return { success: true, messageId: info.messageId };
-  } catch (error) {
-    console.error("Email sending error:", error);
-    return { success: false, error: error.message };
-  }
-}
-
 // ============= ROUTES =============
 
 fastify.get("/", async () => ({

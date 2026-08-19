@@ -304,6 +304,34 @@ fastify.register(fastifyRateLimit, {
   },
 });
 
+// ============= HEALTH CHECK & KEEP-ALIVE (PREVENTS COLD STARTS) =============
+fastify.get("/health", async (request, reply) => {
+  return { status: "ok", service: "manvi-node-server", timestamp: new Date().toISOString() };
+});
+
+fastify.get("/api/health", async (request, reply) => {
+  return { status: "ok", service: "manvi-node-server", timestamp: new Date().toISOString() };
+});
+
+// ============= EMAIL HELPER FUNCTION =============
+async function sendEmail(to, subject, html, from = process.env.SMTP_USER) {
+  try {
+    const mailOptions = {
+      from: `"Manvi International" <${from}>`,
+      to,
+      subject,
+      html,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log("Email sent successfully:", info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error("Email sending error:", error);
+    return { success: false, error: error.message };
+  }
+}
+
 // ============= ROUTES =============
 
 fastify.get("/", async () => ({
@@ -3292,6 +3320,17 @@ const start = async () => {
     const port = process.env.PORT || 5000;
     await fastify.listen({ port, host: "0.0.0.0" });
     console.log(`Server listening on http://localhost:${port}`);
+
+    // Automatic Self-Keep-Alive (prevents Render free tier 15-min cold start sleep)
+    const SERVER_URL = process.env.RENDER_EXTERNAL_URL || "https://manvi-node-server.onrender.com";
+    setInterval(async () => {
+      try {
+        await fetch(`${SERVER_URL}/health`);
+        console.log(`[Keep-Alive Self-Ping] Pinged ${SERVER_URL}/health at ${new Date().toISOString()}`);
+      } catch (err) {
+        console.error("[Keep-Alive Self-Ping Error]:", err.message);
+      }
+    }, 10 * 60 * 1000); // Ping every 10 minutes
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

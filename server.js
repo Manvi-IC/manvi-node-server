@@ -26,6 +26,19 @@ import ServiceArea from "./models/ServiceArea.js";
 import Subscriber from "./models/Subscriber.js";
 import Customer from "./models/Customer.js";
 import Shipment from "./models/Shipment.js";
+import {
+  initiatePayment,
+  paymentResponse,
+  checkPaymentStatus,
+  processRefund,
+  processVoid,
+  generateQR,
+  userCancel,
+  getCardBin,
+  getServiceCharges,
+  getSettlementDetails,
+  getSettlementSummary,
+} from "./routes/paymentRoutes.js";
 
 // ============================================================
 // COUNTRY CODE MAPPING
@@ -147,7 +160,23 @@ async function rawBulkInsert(model, docs) {
 }
 
 dotenv.config();
-
+// After dotenv.config()
+console.log("\n========================================");
+console.log("🔍 ENVIRONMENT VARIABLES CHECK");
+console.log("========================================");
+console.log(`PG_MERCHANT_ID: ${process.env.PG_MERCHANT_ID || "❌ Missing"}`);
+console.log(
+  `PG_AGGREGATOR_ID: ${process.env.PG_AGGREGATOR_ID || "❌ Missing"}`,
+);
+console.log(
+  `PG_SECRET_KEY: ${process.env.PG_SECRET_KEY ? "✅ Set" : "❌ Missing"}`,
+);
+console.log(
+  `PG_INITIATE_SALE_URL: ${process.env.PG_INITIATE_SALE_URL || "❌ Missing"}`,
+);
+console.log(`PG_COMMAND_URL: ${process.env.PG_COMMAND_URL || "❌ Missing"}`);
+console.log(`PG_RETURN_URL: ${process.env.PG_RETURN_URL || "❌ Missing"}`);
+console.log("========================================\n");
 if (!process.env.MONGODB_URI) {
   console.error("FATAL ERROR: MONGODB_URI is not defined.");
   process.exit(1);
@@ -264,7 +293,32 @@ const fastify = Fastify({
 });
 const frontendUrl = process.env.FRONTEND_URL || "*";
 const cleanFrontendUrl = frontendUrl.replace(/\/$/, "");
-
+// Add raw body parser for payment gateway callbacks
+// This allows the server to accept any content type
+fastify.addContentTypeParser('*', { parseAs: 'string' }, function (req, body, done) {
+  try {
+    // Try to parse as JSON
+    try {
+      const parsed = JSON.parse(body);
+      done(null, parsed);
+    } catch {
+      // Try form-urlencoded
+      try {
+        const parsed = {};
+        const params = new URLSearchParams(body);
+        for (const [key, value] of params) {
+          parsed[key] = value;
+        }
+        done(null, parsed);
+      } catch {
+        // Return raw string
+        done(null, { raw: body });
+      }
+    }
+  } catch (err) {
+    done(err);
+  }
+});
 fastify.register(fastifyCors, {
   origin: (origin, cb) => {
     if (!origin) {
@@ -306,11 +360,19 @@ fastify.register(fastifyRateLimit, {
 
 // ============= HEALTH CHECK & KEEP-ALIVE (PREVENTS COLD STARTS) =============
 fastify.get("/health", async (request, reply) => {
-  return { status: "ok", service: "manvi-node-server", timestamp: new Date().toISOString() };
+  return {
+    status: "ok",
+    service: "manvi-node-server",
+    timestamp: new Date().toISOString(),
+  };
 });
 
 fastify.get("/api/health", async (request, reply) => {
-  return { status: "ok", service: "manvi-node-server", timestamp: new Date().toISOString() };
+  return {
+    status: "ok",
+    service: "manvi-node-server",
+    timestamp: new Date().toISOString(),
+  };
 });
 
 // ============= ROUTES =============
@@ -2998,6 +3060,95 @@ fastify.delete(
     }
   },
 );
+// ============ PAYMENT ROUTES ============
+
+// Initiate payment for shipment booking
+fastify.post("/api/payment/initiate", initiatePayment);
+
+// Payment response handler (callback from PG)
+// This handles the payment gateway callback with any content type
+fastify.post("/api/payment/response", async (request, reply) => {
+  try {
+    console.log("[Payment Response] Received callback from PG");
+    console.log("[Payment Response] Headers:", JSON.stringify(request.headers, null, 2));
+    
+    // Get the request body
+    let responseData = request.body;
+    console.log("[Payment Response] Raw body type:", typeof responseData);
+    
+    // If body is a string, parse it
+    if (typeof responseData === 'string') {
+      try {
+        // Try JSON first
+        responseData = JSON.parse(responseData);
+      } catch {
+        // Try form-urlencoded
+        const parsed = {};
+        const params = new URLSearchParams(responseData);
+        for (const [key, value] of params) {
+          parsed[key] = value;
+        }
+        responseData = parsed;
+      }
+    }
+    
+    // If body is an array (from multipart), convert to object
+    if (Array.isArray(responseData)) {
+      const obj = {};
+      for (const item of responseData) {
+        if (item && typeof item === 'object') {
+          Object.assign(obj, item);
+        }
+      }
+      responseData = obj;
+    }
+    
+    // Ensure we have an object
+    if (typeof responseData !== 'object' || responseData === null) {
+      responseData = {};
+    }
+    
+    console.log("[Payment Response] Parsed data:", JSON.stringify(responseData, null, 2));
+    
+    // Process the payment response
+    const result = await paymentResponse({ body: responseData }, reply);
+    return result;
+  } catch (error) {
+    console.error("[Payment Response] Error:", error);
+    // Always return 200 to the payment gateway
+    return reply.status(200).send({
+      success: false,
+      message: error.message || "Payment response processing failed",
+    });
+  }
+});
+
+// Check payment status
+fastify.get("/api/payment/status", checkPaymentStatus);
+
+// Process refund
+fastify.post("/api/payment/refund", processRefund);
+
+// Process void/cancel
+fastify.post("/api/payment/void", processVoid);
+
+// Generate QR for UPI
+fastify.post("/api/payment/generate-qr", generateQR);
+
+// User cancel
+fastify.post("/api/payment/user-cancel", userCancel);
+
+// Get card BIN
+fastify.get("/api/payment/card-bin", getCardBin);
+
+// Get service charges
+fastify.get("/api/payment/service-charges", getServiceCharges);
+
+// Get settlement details
+fastify.get("/api/payment/settlement-details", getSettlementDetails);
+
+// Get settlement summary
+fastify.get("/api/payment/settlement-summary", getSettlementSummary);
 
 // ============================================================
 // SEND SHIPMENT NOTIFICATION EMAIL - FIXED
@@ -3303,15 +3454,22 @@ const start = async () => {
     console.log(`Server listening on http://localhost:${port}`);
 
     // Automatic Self-Keep-Alive (prevents Render free tier 15-min cold start sleep)
-    const SERVER_URL = process.env.RENDER_EXTERNAL_URL || "https://manvi-node-server.onrender.com";
-    setInterval(async () => {
-      try {
-        await fetch(`${SERVER_URL}/health`);
-        console.log(`[Keep-Alive Self-Ping] Pinged ${SERVER_URL}/health at ${new Date().toISOString()}`);
-      } catch (err) {
-        console.error("[Keep-Alive Self-Ping Error]:", err.message);
-      }
-    }, 10 * 60 * 1000); // Ping every 10 minutes
+    const SERVER_URL =
+      process.env.RENDER_EXTERNAL_URL ||
+      "https://manvi-node-server.onrender.com";
+    setInterval(
+      async () => {
+        try {
+          await fetch(`${SERVER_URL}/health`);
+          console.log(
+            `[Keep-Alive Self-Ping] Pinged ${SERVER_URL}/health at ${new Date().toISOString()}`,
+          );
+        } catch (err) {
+          console.error("[Keep-Alive Self-Ping Error]:", err.message);
+        }
+      },
+      10 * 60 * 1000,
+    ); // Ping every 10 minutes
   } catch (err) {
     fastify.log.error(err);
     process.exit(1);

@@ -3061,6 +3061,110 @@ fastify.delete(
     }
   },
 );
+// ============================================================
+// ADMIN CREDENTIALS MANAGEMENT
+// ============================================================
+
+fastify.post("/admin/change-credentials", async (request, reply) => {
+  try {
+    const { currentUsername, currentPassword, newUsername, newPassword } =
+      request.body;
+
+    // Validate required fields
+    if (!currentUsername || !currentPassword) {
+      return reply.status(400).send({
+        success: false,
+        message: "Current username and password are required",
+      });
+    }
+
+    if (!newUsername && !newPassword) {
+      return reply.status(400).send({
+        success: false,
+        message: "Please provide a new username or new password",
+      });
+    }
+
+    // Find the admin
+    const admin = await Admin.findOne({ username: currentUsername });
+    if (!admin) {
+      return reply.status(401).send({
+        success: false,
+        message: "Current username is incorrect",
+      });
+    }
+
+    // Verify current password
+    const match = await bcrypt.compare(currentPassword, admin.passwordHash);
+    if (!match) {
+      return reply.status(401).send({
+        success: false,
+        message: "Current password is incorrect",
+      });
+    }
+
+    const updates = {};
+
+    // Handle username change
+    if (newUsername && newUsername.trim() !== "") {
+      const trimmedUsername = newUsername.trim();
+      if (trimmedUsername.length < 3) {
+        return reply.status(400).send({
+          success: false,
+          message: "New username must be at least 3 characters",
+        });
+      }
+      // Check if new username already exists (on a different admin)
+      const existingAdmin = await Admin.findOne({
+        username: trimmedUsername,
+        _id: { $ne: admin._id },
+      });
+      if (existingAdmin) {
+        return reply.status(409).send({
+          success: false,
+          message: "Username already taken",
+        });
+      }
+      updates.username = trimmedUsername;
+    }
+
+    // Handle password change
+    if (newPassword && newPassword.trim() !== "") {
+      if (newPassword.length < 6) {
+        return reply.status(400).send({
+          success: false,
+          message: "New password must be at least 6 characters",
+        });
+      }
+      updates.passwordHash = await bcrypt.hash(newPassword, 10);
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return reply.status(400).send({
+        success: false,
+        message: "No changes were made",
+      });
+    }
+
+    await Admin.findByIdAndUpdate(admin._id, updates);
+
+    const changedFields = [];
+    if (updates.username) changedFields.push("username");
+    if (updates.passwordHash) changedFields.push("password");
+
+    return {
+      success: true,
+      message: `Successfully updated ${changedFields.join(" and ")}`,
+      updated: changedFields,
+    };
+  } catch (error) {
+    console.error("Change credentials error:", error);
+    return reply.status(500).send({
+      success: false,
+      message: "Failed to update credentials",
+    });
+  }
+});
 // ============ PAYMENT ROUTES ============
 
 // Initiate payment for shipment booking

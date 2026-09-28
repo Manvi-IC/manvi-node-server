@@ -1779,6 +1779,91 @@ fastify.post(
     }
   },
 );
+// ============================================================
+// ADMIN — QUOTE ENQUIRIES
+// ============================================================
+
+fastify.get("/admin/quote-enquiries", async (request, reply) => {
+  try {
+    const { status, q, limit = 200, page = 1 } = request.query;
+    const filter = {};
+    if (status && status !== "all") filter.status = status;
+    if (q) {
+      const regex = new RegExp(q, "i");
+      filter.$or = [
+        { name: regex },
+        { email: regex },
+        { phone: regex },
+        { destination: regex },
+        { service: regex },
+      ];
+    }
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [data, total] = await Promise.all([
+      QuoteEnquiry.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      QuoteEnquiry.countDocuments(filter),
+    ]);
+    return { success: true, data, total, page: parseInt(page) };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/admin/quote-enquiries/stats", async (request, reply) => {
+  try {
+    const [total, newCount, contacted, converted, closed] = await Promise.all([
+      QuoteEnquiry.countDocuments(),
+      QuoteEnquiry.countDocuments({ status: "new" }),
+      QuoteEnquiry.countDocuments({ status: "contacted" }),
+      QuoteEnquiry.countDocuments({ status: "converted" }),
+      QuoteEnquiry.countDocuments({ status: "closed" }),
+    ]);
+    return {
+      success: true,
+      data: { total, new: newCount, contacted, converted, closed },
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.put("/admin/quote-enquiries/:id", async (request, reply) => {
+  try {
+    const { status, notes } = request.body;
+    const update = {};
+    if (status !== undefined) update.status = status;
+    if (notes !== undefined) update.notes = notes;
+    const enquiry = await QuoteEnquiry.findByIdAndUpdate(
+      request.params.id,
+      update,
+      { new: true, runValidators: true },
+    );
+    if (!enquiry)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Enquiry not found" });
+    return { success: true, data: enquiry, message: "Enquiry updated" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.delete("/admin/quote-enquiries/:id", async (request, reply) => {
+  try {
+    const enquiry = await QuoteEnquiry.findByIdAndDelete(request.params.id);
+    if (!enquiry)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Enquiry not found" });
+    return { success: true, message: "Enquiry deleted" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
 
 // ============================================================
 // MANVI COURIER SHIPMENT API ROUTES

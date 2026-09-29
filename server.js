@@ -418,23 +418,42 @@ fastify.post(
   { config: { rateLimit: { max: 50, timeWindow: "1 minute" } } },
   async (request, reply) => {
     try {
-      const { username, password } = request.body;
+      const { username, password } = request.body || {};
+      if (!username || !password) {
+        return reply
+          .status(400)
+          .send({ success: false, message: "Username and password are required" });
+      }
+
       const adminCount = await Admin.countDocuments();
       if (adminCount === 0) {
         const hash = await bcrypt.hash("password", 10);
-        await Admin.create({ username: "admin", passwordHash: hash });
+        await Admin.create({ username: "admin", passwordHash: hash, role: "admin" });
       }
-      const admin = await Admin.findOne({ username });
+
+      const trimmedUsername = username.trim();
+      const escapedUsername = trimmedUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const admin = await Admin.findOne({
+        username: { $regex: new RegExp(`^${escapedUsername}$`, "i") },
+      });
+
       if (!admin)
         return reply
           .status(401)
           .send({ success: false, message: "Invalid credentials" });
+
       const match = await bcrypt.compare(password, admin.passwordHash);
       if (!match)
         return reply
           .status(401)
           .send({ success: false, message: "Invalid credentials" });
-      return { success: true, message: "Login successful" };
+
+      return {
+        success: true,
+        message: "Login successful",
+        role: admin.role || "admin",
+        username: admin.username,
+      };
     } catch (error) {
       return reply
         .status(500)

@@ -29,6 +29,9 @@ const QuoteEnquirySchema = new mongoose.Schema(
     totalPrice: { type: Number, required: true },
     tat: { type: String, default: "" },
 
+    // Page origin
+    sourcePage: { type: String, default: "Website", trim: true },
+
     // Status
     status: {
       type: String,

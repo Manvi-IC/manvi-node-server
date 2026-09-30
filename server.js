@@ -39,6 +39,9 @@ import {
   getSettlementDetails,
   getSettlementSummary,
 } from "./routes/paymentRoutes.js";
+import Shopkeeper from "./models/Shopkeeper.js";
+import ShopkeeperRate from "./models/ShopkeeperRate.js";
+import ShopkeeperUploadLog from "./models/ShopkeeperUploadLog.js";
 
 // ============================================================
 // COUNTRY CODE MAPPING
@@ -1823,6 +1826,489 @@ fastify.post("/admin/upload-image", async (request, reply) => {
       message: "Image uploaded successfully",
     };
   } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+// ===========================================================================
+//  SHOPKEEPER (BULK RATES) SYSTEM
+// ===========================================================================
+
+function generateShopkeeperId() {
+  return `SKP-${Math.floor(100000 + Math.random() * 900000)}`;
+}
+
+fastify.post(
+  "/shopkeeper/register",
+  { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+  async (request, reply) => {
+    try {
+      const {
+        name, email, phone, company, address, city, state, pincode, gstin, password,
+      } = request.body || {};
+
+      if (!name || !email || !phone || !address || !gstin || !password) {
+        return reply.status(400).send({
+          success: false,
+          message: "Name, email, phone, address, GST and password are required.",
+        });
+      }
+      if (!/^\d{10}$/.test(String(phone).trim())) {
+        return reply.status(400).send({ success: false, message: "Phone must be exactly 10 digits." });
+      }
+      if (String(password).length < 6) {
+        return reply.status(400).send({ success: false, message: "Password must be at least 6 characters." });
+      }
+
+      const cleanEmail = String(email).toLowerCase().trim();
+      const existing = await Shopkeeper.findOne({ email: cleanEmail });
+      if (existing) {
+        return reply.status(409).send({ success: false, message: "This email is already registered. Please log in." });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const shopkeeper = await Shopkeeper.create({
+        shopkeeperId: generateShopkeeperId(),
+        name: name.trim(),
+        email: cleanEmail,
+        phone: String(phone).trim(),
+        company: (company || "").trim(),
+        address: address.trim(),
+        city: (city || "").trim(),
+        state: (state || "").trim(),
+        pincode: (pincode || "").trim(),
+        gstin: String(gstin).toUpperCase().trim(),
+        passwordHash,
+        status: "APPROVED",
+      });
+
+      sendEmail(
+        shopkeeper.email,
+        "Welcome to Manvi Bulk Rates",
+        `<p>Hi ${shopkeeper.name},</p><p>Your Manvi Bulk Rates account is ready. You can now log in to view your exclusive bulk pricing.</p><p><strong>Shopkeeper ID:</strong> ${shopkeeper.shopkeeperId}</p>`,
+      ).catch(() => {});
+
+      return reply.send({
+        success: true,
+        message: "Registration successful. You can now log in.",
+        shopkeeper: {
+          shopkeeperId: shopkeeper.shopkeeperId,
+          name: shopkeeper.name,
+          email: shopkeeper.email,
+          status: shopkeeper.status,
+        },
+      });
+    } catch (error) {
+      if (error.code === 11000) {
+        return reply.status(409).send({ success: false, message: "This email is already registered." });
+      }
+      console.error("Shopkeeper register error:", error);
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+  },
+);
+
+fastify.post(
+  "/shopkeeper/login",
+  { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+  async (request, reply) => {
+    try {
+      const { email, password } = request.body || {};
+      if (!email || !password) {
+        return reply.status(400).send({ success: false, message: "Email and password are required." });
+      }
+      const cleanEmail = String(email).toLowerCase().trim();
+      const shopkeeper = await Shopkeeper.findOne({ email: cleanEmail });
+      if (!shopkeeper) {
+        return reply.status(404).send({ success: false, message: "No account found with this email." });
+      }
+      const match = await bcrypt.compare(password, shopkeeper.passwordHash);
+      if (!match) {
+        return reply.status(401).send({ success: false, message: "Incorrect password." });
+      }
+      if (shopkeeper.status !== "APPROVED") {
+        return reply.status(403).send({
+          success: false,
+          message: `Account status is ${shopkeeper.status}. Please contact support.`,
+          status: shopkeeper.status,
+        });
+      }
+
+      shopkeeper.lastLoginAt = new Date();
+      await shopkeeper.save();
+
+      return reply.send({
+        success: true,
+        message: "Login successful",
+        shopkeeper: {
+          shopkeeperId: shopkeeper.shopkeeperId,
+          name: shopkeeper.name,
+          email: shopkeeper.email,
+          phone: shopkeeper.phone,
+          company: shopkeeper.company,
+          address: shopkeeper.address,
+          city: shopkeeper.city,
+          state: shopkeeper.state,
+          pincode: shopkeeper.pincode,
+          gstin: shopkeeper.gstin,
+          status: shopkeeper.status,
+        },
+      });
+    } catch (error) {
+      console.error("Shopkeeper login error:", error);
+      return reply.status(500).send({ success: false, message: error.message });
+    }
+  },
+);
+
+fastify.get("/admin/shopkeepers", async (request, reply) => {
+  try {
+    const { status, q } = request.query;
+    const filter = {};
+    if (status && status !== "ALL") filter.status = status;
+    if (q) {
+      const regex = new RegExp(q, "i");
+      filter.$or = [
+        { name: regex }, { email: regex }, { phone: regex },
+        { gstin: regex }, { company: regex },
+      ];
+    }
+    const list = await Shopkeeper.find(filter)
+      .sort({ createdAt: -1 })
+      .select("-passwordHash")
+      .lean();
+    return { success: true, data: list, total: list.length };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/admin/shopkeepers/stats", async (request, reply) => {
+  try {
+    const [total, pending, approved, rejected] = await Promise.all([
+      Shopkeeper.countDocuments(),
+      Shopkeeper.countDocuments({ status: "PENDING" }),
+      Shopkeeper.countDocuments({ status: "APPROVED" }),
+      Shopkeeper.countDocuments({ status: "REJECTED" }),
+    ]);
+    return { success: true, data: { total, pending, approved, rejected } };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.post("/admin/shopkeepers/status", async (request, reply) => {
+  try {
+    const { shopkeeperId, status } = request.body || {};
+    if (!shopkeeperId || !["APPROVED", "REJECTED", "PENDING"].includes(status)) {
+      return reply.status(400).send({ success: false, message: "shopkeeperId and status required" });
+    }
+    const shopkeeper = await Shopkeeper.findOneAndUpdate(
+      { shopkeeperId }, { status }, { new: true },
+    ).select("-passwordHash");
+    if (!shopkeeper) {
+      return reply.status(404).send({ success: false, message: "Shopkeeper not found" });
+    }
+    return { success: true, data: shopkeeper };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.delete("/admin/shopkeepers/:shopkeeperId", async (request, reply) => {
+  try {
+    const result = await Shopkeeper.findOneAndDelete({ shopkeeperId: request.params.shopkeeperId });
+    if (!result) return reply.status(404).send({ success: false, message: "Shopkeeper not found" });
+    return { success: true, message: "Shopkeeper deleted" };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── Upload shopkeeper rate sheet OR zipcode zone file (admin) ─────────────
+// Mirrors /rates/upload: auto-detects rate sheet vs zipcode zone file and
+// routes it to the correct collection. Zipcode zones are SHARED with the
+// regular rate system (both read from the same ZipZone collection), so
+// uploading zones here is equivalent to uploading them via /rates/upload.
+fastify.post("/shopkeeper/rates/upload", async (request, reply) => {
+  try {
+    const data = await request.file();
+    if (!data) {
+      return reply
+        .status(400)
+        .send({ success: false, message: "No file uploaded" });
+    }
+
+    const filename = data.filename;
+    const chunks = [];
+    for await (const chunk of data.file) chunks.push(chunk);
+    const buffer = Buffer.concat(chunks);
+
+    const lowerName = filename.toLowerCase();
+    const workbook = xlsx.read(buffer, { type: "buffer" });
+
+    // Peek at the file to detect its type (same logic as /rates/upload)
+    const peekSheet = workbook.Sheets[workbook.SheetNames[0]];
+    const peekRaw = xlsx.utils.sheet_to_json(peekSheet, {
+      header: 1,
+      defval: null,
+    });
+    const headerRow = (peekRaw[0] || []).join(",").toUpperCase();
+    const isZoningFile =
+      (!headerRow.includes("SHIPPER") &&
+        headerRow.includes("NETWORK") &&
+        !headerRow.includes("ZIPCODE")) ||
+      (peekRaw[1] || []).join(",").toUpperCase().includes("FORWARDER");
+
+    let fileType;
+    if (isZoningFile) fileType = "zipcodes";
+    else if (lowerName.includes("zip")) fileType = "zipcodes";
+    else fileType = "shopkeeper-rates";
+
+    const uploadId = uuidv4();
+    await ShopkeeperUploadLog.create({
+      uploadId,
+      filename,
+      fileType,
+      status: "processing",
+      fileSize: buffer.length,
+    });
+
+    let rowsInserted = 0;
+    let rowsFailed = 0;
+    let deletedOld = 0;
+    let errorMessage;
+
+    try {
+      if (isZoningFile) {
+        // Zoning file → shared ZipZone collection (same as /rates/upload)
+        const rows = parseZoningFile(workbook);
+        const delRes = await ZipZone.deleteMany({ zipcode: { $not: /^\d/ } });
+        deletedOld = delRes.deletedCount || 0;
+        const docs = rows.map((r) => ({ ...r, uploadId }));
+        const res = await rawBulkInsert(ZipZone, docs);
+        rowsInserted = res.inserted;
+        rowsFailed = res.failed;
+      } else if (fileType === "zipcodes") {
+        // Zip-named file → shared ZipZone collection
+        const rows = parseZipCodes(workbook);
+        const delRes = await ZipZone.deleteMany({ zipcode: { $regex: /^\d/ } });
+        deletedOld = delRes.deletedCount || 0;
+        const docs = rows.map((r) => ({ ...r, uploadId }));
+        const res = await rawBulkInsert(ZipZone, docs);
+        rowsInserted = res.inserted;
+        rowsFailed = res.failed;
+      } else {
+        // Shopkeeper rate sheet → ShopkeeperRate collection (independent)
+        const rows = parseWalkinRates(workbook);
+        const delRes = await ShopkeeperRate.deleteMany({});
+        deletedOld = delRes.deletedCount || 0;
+        const docs = rows.map((r) => ({ ...r, uploadId }));
+        const res = await rawBulkInsert(ShopkeeperRate, docs);
+        rowsInserted = res.inserted;
+        rowsFailed = res.failed;
+      }
+    } catch (parseErr) {
+      errorMessage = parseErr.message;
+      rowsFailed = 1;
+    }
+
+    const status = errorMessage
+      ? "failed"
+      : rowsFailed > 0 && rowsInserted === 0
+        ? "failed"
+        : "completed";
+
+    await ShopkeeperUploadLog.findOneAndUpdate(
+      { uploadId },
+      { status, rowsInserted, rowsFailed, deletedOld, errorMessage },
+    );
+
+    apiCache.clear();
+
+    return {
+      success: status !== "failed",
+      uploadId,
+      fileType,
+      deletedOld,
+      rowsInserted,
+      rowsFailed,
+      message:
+        status === "failed"
+          ? `Upload failed: ${errorMessage || "No rows inserted"}`
+          : `Uploaded successfully: ${deletedOld} old row(s) removed, ${rowsInserted} new record(s) inserted`,
+    };
+  } catch (error) {
+    console.error("Shopkeeper rate upload error:", error);
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/shopkeeper/rates/uploads", async (request, reply) => {
+  try {
+    const logs = await ShopkeeperUploadLog.find({})
+      .sort({ createdAt: -1 })
+      .limit(30)
+      .lean();
+    return { success: true, data: logs };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+// ── Services summary (admin) ──────────────────────────────────────────────
+// Returns both shopkeeper rate services AND the shared zipcode services so
+// the admin page can show a "Manage Existing Data" panel identical to the
+// regular upload page.
+fastify.get("/shopkeeper/rates/services", async (request, reply) => {
+  try {
+    const rateServices = await ShopkeeperRate.aggregate([
+      {
+        $group: {
+          _id: { service: "$service", network: "$network" },
+          minWt: { $min: "$minWt" },
+          maxWt: { $max: "$maxWt" },
+          slabs: { $sum: 1 },
+        },
+      },
+    ]);
+    const zipcodeServices = await ZipZone.distinct("service");
+    return {
+      success: true,
+      data: {
+        rateServices: rateServices.map((r) => ({
+          service: r._id.service,
+          network: r._id.network,
+          minWt: r.minWt,
+          maxWt: r.maxWt,
+          slabs: r.slabs,
+        })),
+        zipcodeServices,
+      },
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.delete("/shopkeeper/rates/clear", async (request, reply) => {
+  try {
+    const result = await ShopkeeperRate.deleteMany({});
+    apiCache.clear();
+    return {
+      success: true,
+      deletedCount: result.deletedCount || 0,
+      message: `Deleted ${result.deletedCount || 0} shopkeeper rate record(s).`,
+    };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
+  try {
+    const actualWt = parseFloat(request.query.actualWt) || 0;
+    const length = parseFloat(request.query.length) || 0;
+    const breadth = parseFloat(request.query.breadth) || 0;
+    const height = parseFloat(request.query.height) || 0;
+    const country = String(request.query.country || "").trim().toUpperCase();
+    const zipcode = String(request.query.zipcode || "").trim().toUpperCase();
+    const zoningCountry = String(request.query.zoningCountry || "").trim().toUpperCase();
+
+    if (!actualWt || !country) {
+      return reply.status(400).send({ success: false, message: "actualWt and country are required" });
+    }
+
+    const volWt = length && breadth && height ? (length * breadth * height) / 5000 : 0;
+    const chargeableWt = Math.ceil(Math.max(actualWt, volWt));
+
+    const ZIPCODE_COUNTRIES = ["AUSTRALIA", "CANADA"];
+    if (ZIPCODE_COUNTRIES.includes(country) && !zipcode) {
+      return reply.status(400).send({ success: false, message: `Zipcode is required for ${country}` });
+    }
+
+    const serviceList = SERVICE_DESTINATION_MAP[country];
+    if (!serviceList) {
+      return reply.status(400).send({ success: false, message: `Unknown destination: ${country}` });
+    }
+
+    const results = [];
+
+    for (const svc of serviceList) {
+      try {
+        let zone = null;
+
+        if (svc.zone) {
+          zone = svc.zone;
+        } else if (svc.zipBased) {
+          const cleanZip = zipcode.replace(/\s+/g, "");
+          let zoneDoc = null;
+          for (const tryZip of [cleanZip, cleanZip.slice(0, 4), cleanZip.slice(0, 3), cleanZip.slice(0, 1)]) {
+            if (!tryZip) continue;
+            zoneDoc = await ZipZone.findOne({ service: svc.service, zipcode: tryZip }).lean();
+            if (zoneDoc) break;
+          }
+          if (!zoneDoc) continue;
+          zone = String(zoneDoc.zone);
+        } else if (svc.zoningCountry) {
+          const zoneDoc = await ZipZone.findOne({ service: svc.service, zipcode: svc.zoningCountry }).lean();
+          if (!zoneDoc) continue;
+          zone = String(zoneDoc.zone);
+        } else if (svc.zoningFromInput) {
+          const lookup = zoningCountry || country;
+          const zoneDoc = await ZipZone.findOne({ service: svc.service, zipcode: lookup }).lean();
+          if (!zoneDoc) continue;
+          zone = String(zoneDoc.zone);
+        }
+
+        if (!zone) continue;
+
+        const [rateDocS, rateDocB] = await Promise.all([
+          ShopkeeperRate.findOne({
+            service: svc.service, type: "S",
+            minWt: { $lte: chargeableWt }, maxWt: { $gte: chargeableWt },
+          }).sort({ createdAt: -1 }).lean(),
+          ShopkeeperRate.findOne({
+            service: svc.service, type: "B",
+            minWt: { $lte: chargeableWt }, maxWt: { $gte: chargeableWt },
+          }).sort({ createdAt: -1 }).lean(),
+        ]);
+
+        for (const rd of [rateDocS, rateDocB].filter(Boolean)) {
+          const zoneMap = rd.zones instanceof Map ? Object.fromEntries(rd.zones) : rd.zones;
+          const availableZoneKeys = zoneMap ? Object.keys(zoneMap) : [];
+          let rawPrice = zoneMap?.[zone];
+          if ((rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) && availableZoneKeys.length > 0) {
+            const firstVal = Object.values(zoneMap)[0];
+            if (firstVal !== undefined && firstVal !== null && !isNaN(firstVal)) rawPrice = firstVal;
+          }
+          if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) continue;
+
+          const totalPrice = rd.type === "S" ? Math.round(rawPrice) : Math.round(rawPrice * chargeableWt);
+
+          results.push({
+            service: svc.service, network: rd.network,
+            chargeableWt, actualWt,
+            volWt: Math.round(volWt * 100) / 100,
+            zone, rateType: rd.type, totalPrice,
+            tat: estimateTat(svc.service),
+          });
+        }
+      } catch (svcErr) {
+        console.error(`[Shopkeeper Quote] Error for "${svc.service}":`, svcErr.message);
+      }
+    }
+
+    results.sort((a, b) => a.totalPrice - b.totalPrice);
+
+    return {
+      success: true,
+      chargeableWt, actualWt,
+      volWt: Math.round(volWt * 100) / 100,
+      country, zipcode: zipcode || null,
+      quotes: results,
+    };
+  } catch (error) {
+    console.error("[Shopkeeper Quote] Crash:", error);
     return reply.status(500).send({ success: false, message: error.message });
   }
 });

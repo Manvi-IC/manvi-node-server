@@ -2339,15 +2339,76 @@ fastify.post(
         network,
         zone,
         rateType,
-        totalPrice,
         tat,
         sourcePage,
+        notes,
       } = request.body;
 
       if (!name || !phone || !email || !destination || !service) {
         return reply
           .status(400)
           .send({ success: false, message: "Missing required fields" });
+      }
+
+      let resolvedSource = sourcePage ? String(sourcePage).trim() : "";
+      if (!resolvedSource || resolvedSource === "Website") {
+        const referer = String(
+          request.headers.referer || request.headers.origin || "",
+        ).toLowerCase();
+        const serviceLower = String(service || "").toLowerCase();
+        const notesLower = String(notes || "").toLowerCase();
+        const destLower = String(destination || "").toLowerCase();
+
+        if (
+          service === "WhatsApp Quick Enquiry" ||
+          destLower === "whatsapp_lead" ||
+          notesLower.includes("whatsapp") ||
+          referer.includes("whatsapp")
+        ) {
+          resolvedSource = "Shopkeeper WhatsApp";
+        } else if (
+          serviceLower.includes("diwali") ||
+          notesLower.includes("diwali") ||
+          referer.includes("diwali")
+        ) {
+          resolvedSource = "Diwali Campaign";
+        } else if (
+          serviceLower.includes("winter") ||
+          notesLower.includes("winter") ||
+          referer.includes("winter")
+        ) {
+          resolvedSource = "Winter Campaign";
+        } else if (
+          referer.includes("business-campaign") ||
+          notesLower.includes("business")
+        ) {
+          resolvedSource = "Business Campaign";
+        } else if (referer.includes("campaign")) {
+          resolvedSource = "Campaign Page";
+        } else if (referer.includes("shopkeeper")) {
+          resolvedSource = "Shopkeeper Page";
+        } else if (referer.includes("quote")) {
+          resolvedSource = "Get Quote";
+        } else if (
+          referer.includes("contact") ||
+          notesLower.includes("query:") ||
+          serviceLower.includes("contact")
+        ) {
+          resolvedSource = "Contact Page";
+        } else if (
+          referer.includes("book-shipment") ||
+          serviceLower.includes("booked")
+        ) {
+          resolvedSource = "Book Shipment";
+        } else if (
+          referer.endsWith("/") ||
+          referer.includes("localhost:3000/") ||
+          referer.includes("manvi.in/")
+        ) {
+          resolvedSource = "Home Page";
+        } else {
+          resolvedSource = "Website";
+        }
       }
 
       const enquiry = new QuoteEnquiry({
@@ -2369,7 +2430,8 @@ fastify.post(
         rateType: rateType || "",
         totalPrice: parseFloat(totalPrice) || 0,
         tat: tat || "",
-        sourcePage: sourcePage || "Website",
+        sourcePage: resolvedSource,
+        notes: notes || "",
       });
 
       await enquiry.save();
@@ -2399,7 +2461,7 @@ fastify.post(
         zohoData.append("Designation", service || "");
         zohoData.append("Website", chargeableWt ? chargeableWt.toString() : "");
         zohoData.append("Company", totalPrice ? totalPrice.toString() : "0");
-        const desc = `Source Page: ${sourcePage || "Website"}\nDestination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
+        const desc = `Source Page: ${resolvedSource}\nDestination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
         zohoData.append("Description", desc);
         zohoData.append("Lead Source", "Web Download");
 
@@ -2473,10 +2535,11 @@ fastify.get("/admin/quote-enquiries/stats", async (request, reply) => {
 
 fastify.put("/admin/quote-enquiries/:id", async (request, reply) => {
   try {
-    const { status, notes } = request.body;
+    const { status, notes, sourcePage } = request.body;
     const update = {};
     if (status !== undefined) update.status = status;
     if (notes !== undefined) update.notes = notes;
+    if (sourcePage !== undefined) update.sourcePage = sourcePage;
     const enquiry = await QuoteEnquiry.findByIdAndUpdate(
       request.params.id,
       update,

@@ -4120,6 +4120,31 @@ fastify.post("/admin/newsletter/send", async (req, reply) => {
     return reply.status(500).send({ success: false, error: "Server error" });
   }
 });
+fastify.get("/rates/australia-cities", async (request, reply) => {
+  try {
+    const cached = apiCache.get("australia-cities");
+    if (cached) return { success: true, data: cached };
+
+    const cities = await ZipZone.aggregate([
+      { $match: { country: "AUSTRALIA" } },
+      {
+        $group: {
+          _id: { city: "$city", zipcode: "$zipcode" },
+        },
+      },
+      { $sort: { "_id.city": 1 } },
+    ]);
+
+    const data = cities
+      .filter((c) => c._id.city)
+      .map((c) => ({ city: c._id.city, zipcode: c._id.zipcode }));
+
+    apiCache.set("australia-cities", data, 3600);
+    return { success: true, data };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
 
 const start = async () => {
   try {

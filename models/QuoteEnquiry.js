@@ -36,6 +36,7 @@ const QuoteEnquirySchema = new mongoose.Schema(
       default: "new",
     },
     notes: { type: String, default: "" },
+    sourcePage: { type: String, default: "" },  // ← NEW
   },
   { timestamps: true }
 );

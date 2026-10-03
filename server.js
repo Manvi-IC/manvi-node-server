@@ -298,30 +298,34 @@ const frontendUrl = process.env.FRONTEND_URL || "*";
 const cleanFrontendUrl = frontendUrl.replace(/\/$/, "");
 // Add raw body parser for payment gateway callbacks
 // This allows the server to accept any content type
-fastify.addContentTypeParser('*', { parseAs: 'string' }, function (req, body, done) {
-  try {
-    // Try to parse as JSON
+fastify.addContentTypeParser(
+  "*",
+  { parseAs: "string" },
+  function (req, body, done) {
     try {
-      const parsed = JSON.parse(body);
-      done(null, parsed);
-    } catch {
-      // Try form-urlencoded
+      // Try to parse as JSON
       try {
-        const parsed = {};
-        const params = new URLSearchParams(body);
-        for (const [key, value] of params) {
-          parsed[key] = value;
-        }
+        const parsed = JSON.parse(body);
         done(null, parsed);
       } catch {
-        // Return raw string
-        done(null, { raw: body });
+        // Try form-urlencoded
+        try {
+          const parsed = {};
+          const params = new URLSearchParams(body);
+          for (const [key, value] of params) {
+            parsed[key] = value;
+          }
+          done(null, parsed);
+        } catch {
+          // Return raw string
+          done(null, { raw: body });
+        }
       }
+    } catch (err) {
+      done(err);
     }
-  } catch (err) {
-    done(err);
-  }
-});
+  },
+);
 fastify.register(fastifyCors, {
   origin: (origin, cb) => {
     if (!origin) {
@@ -1843,26 +1847,51 @@ fastify.post(
   async (request, reply) => {
     try {
       const {
-        name, email, phone, company, address, city, state, pincode, gstin, password,
+        name,
+        email,
+        phone,
+        company,
+        address,
+        city,
+        state,
+        pincode,
+        gstin,
+        password,
       } = request.body || {};
 
       if (!name || !email || !phone || !address || !gstin || !password) {
         return reply.status(400).send({
           success: false,
-          message: "Name, email, phone, address, GST and password are required.",
+          message:
+            "Name, email, phone, address, GST and password are required.",
         });
       }
       if (!/^\d{10}$/.test(String(phone).trim())) {
-        return reply.status(400).send({ success: false, message: "Phone must be exactly 10 digits." });
+        return reply
+          .status(400)
+          .send({
+            success: false,
+            message: "Phone must be exactly 10 digits.",
+          });
       }
       if (String(password).length < 6) {
-        return reply.status(400).send({ success: false, message: "Password must be at least 6 characters." });
+        return reply
+          .status(400)
+          .send({
+            success: false,
+            message: "Password must be at least 6 characters.",
+          });
       }
 
       const cleanEmail = String(email).toLowerCase().trim();
       const existing = await Shopkeeper.findOne({ email: cleanEmail });
       if (existing) {
-        return reply.status(409).send({ success: false, message: "This email is already registered. Please log in." });
+        return reply
+          .status(409)
+          .send({
+            success: false,
+            message: "This email is already registered. Please log in.",
+          });
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
@@ -1899,7 +1928,12 @@ fastify.post(
       });
     } catch (error) {
       if (error.code === 11000) {
-        return reply.status(409).send({ success: false, message: "This email is already registered." });
+        return reply
+          .status(409)
+          .send({
+            success: false,
+            message: "This email is already registered.",
+          });
       }
       console.error("Shopkeeper register error:", error);
       return reply.status(500).send({ success: false, message: error.message });
@@ -1914,16 +1948,28 @@ fastify.post(
     try {
       const { email, password } = request.body || {};
       if (!email || !password) {
-        return reply.status(400).send({ success: false, message: "Email and password are required." });
+        return reply
+          .status(400)
+          .send({
+            success: false,
+            message: "Email and password are required.",
+          });
       }
       const cleanEmail = String(email).toLowerCase().trim();
       const shopkeeper = await Shopkeeper.findOne({ email: cleanEmail });
       if (!shopkeeper) {
-        return reply.status(404).send({ success: false, message: "No account found with this email." });
+        return reply
+          .status(404)
+          .send({
+            success: false,
+            message: "No account found with this email.",
+          });
       }
       const match = await bcrypt.compare(password, shopkeeper.passwordHash);
       if (!match) {
-        return reply.status(401).send({ success: false, message: "Incorrect password." });
+        return reply
+          .status(401)
+          .send({ success: false, message: "Incorrect password." });
       }
       if (shopkeeper.status !== "APPROVED") {
         return reply.status(403).send({
@@ -1968,8 +2014,11 @@ fastify.get("/admin/shopkeepers", async (request, reply) => {
     if (q) {
       const regex = new RegExp(q, "i");
       filter.$or = [
-        { name: regex }, { email: regex }, { phone: regex },
-        { gstin: regex }, { company: regex },
+        { name: regex },
+        { email: regex },
+        { phone: regex },
+        { gstin: regex },
+        { company: regex },
       ];
     }
     const list = await Shopkeeper.find(filter)
@@ -1999,14 +2048,23 @@ fastify.get("/admin/shopkeepers/stats", async (request, reply) => {
 fastify.post("/admin/shopkeepers/status", async (request, reply) => {
   try {
     const { shopkeeperId, status } = request.body || {};
-    if (!shopkeeperId || !["APPROVED", "REJECTED", "PENDING"].includes(status)) {
-      return reply.status(400).send({ success: false, message: "shopkeeperId and status required" });
+    if (
+      !shopkeeperId ||
+      !["APPROVED", "REJECTED", "PENDING"].includes(status)
+    ) {
+      return reply
+        .status(400)
+        .send({ success: false, message: "shopkeeperId and status required" });
     }
     const shopkeeper = await Shopkeeper.findOneAndUpdate(
-      { shopkeeperId }, { status }, { new: true },
+      { shopkeeperId },
+      { status },
+      { new: true },
     ).select("-passwordHash");
     if (!shopkeeper) {
-      return reply.status(404).send({ success: false, message: "Shopkeeper not found" });
+      return reply
+        .status(404)
+        .send({ success: false, message: "Shopkeeper not found" });
     }
     return { success: true, data: shopkeeper };
   } catch (error) {
@@ -2016,8 +2074,13 @@ fastify.post("/admin/shopkeepers/status", async (request, reply) => {
 
 fastify.delete("/admin/shopkeepers/:shopkeeperId", async (request, reply) => {
   try {
-    const result = await Shopkeeper.findOneAndDelete({ shopkeeperId: request.params.shopkeeperId });
-    if (!result) return reply.status(404).send({ success: false, message: "Shopkeeper not found" });
+    const result = await Shopkeeper.findOneAndDelete({
+      shopkeeperId: request.params.shopkeeperId,
+    });
+    if (!result)
+      return reply
+        .status(404)
+        .send({ success: false, message: "Shopkeeper not found" });
     return { success: true, message: "Shopkeeper deleted" };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
@@ -2210,25 +2273,41 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
     const length = parseFloat(request.query.length) || 0;
     const breadth = parseFloat(request.query.breadth) || 0;
     const height = parseFloat(request.query.height) || 0;
-    const country = String(request.query.country || "").trim().toUpperCase();
-    const zipcode = String(request.query.zipcode || "").trim().toUpperCase();
-    const zoningCountry = String(request.query.zoningCountry || "").trim().toUpperCase();
+    const country = String(request.query.country || "")
+      .trim()
+      .toUpperCase();
+    const zipcode = String(request.query.zipcode || "")
+      .trim()
+      .toUpperCase();
+    const zoningCountry = String(request.query.zoningCountry || "")
+      .trim()
+      .toUpperCase();
 
     if (!actualWt || !country) {
-      return reply.status(400).send({ success: false, message: "actualWt and country are required" });
+      return reply
+        .status(400)
+        .send({ success: false, message: "actualWt and country are required" });
     }
 
-    const volWt = length && breadth && height ? (length * breadth * height) / 5000 : 0;
+    const volWt =
+      length && breadth && height ? (length * breadth * height) / 5000 : 0;
     const chargeableWt = Math.ceil(Math.max(actualWt, volWt));
 
     const ZIPCODE_COUNTRIES = ["AUSTRALIA", "CANADA"];
     if (ZIPCODE_COUNTRIES.includes(country) && !zipcode) {
-      return reply.status(400).send({ success: false, message: `Zipcode is required for ${country}` });
+      return reply
+        .status(400)
+        .send({
+          success: false,
+          message: `Zipcode is required for ${country}`,
+        });
     }
 
     const serviceList = SERVICE_DESTINATION_MAP[country];
     if (!serviceList) {
-      return reply.status(400).send({ success: false, message: `Unknown destination: ${country}` });
+      return reply
+        .status(400)
+        .send({ success: false, message: `Unknown destination: ${country}` });
     }
 
     const results = [];
@@ -2242,20 +2321,34 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
         } else if (svc.zipBased) {
           const cleanZip = zipcode.replace(/\s+/g, "");
           let zoneDoc = null;
-          for (const tryZip of [cleanZip, cleanZip.slice(0, 4), cleanZip.slice(0, 3), cleanZip.slice(0, 1)]) {
+          for (const tryZip of [
+            cleanZip,
+            cleanZip.slice(0, 4),
+            cleanZip.slice(0, 3),
+            cleanZip.slice(0, 1),
+          ]) {
             if (!tryZip) continue;
-            zoneDoc = await ZipZone.findOne({ service: svc.service, zipcode: tryZip }).lean();
+            zoneDoc = await ZipZone.findOne({
+              service: svc.service,
+              zipcode: tryZip,
+            }).lean();
             if (zoneDoc) break;
           }
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         } else if (svc.zoningCountry) {
-          const zoneDoc = await ZipZone.findOne({ service: svc.service, zipcode: svc.zoningCountry }).lean();
+          const zoneDoc = await ZipZone.findOne({
+            service: svc.service,
+            zipcode: svc.zoningCountry,
+          }).lean();
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         } else if (svc.zoningFromInput) {
           const lookup = zoningCountry || country;
-          const zoneDoc = await ZipZone.findOne({ service: svc.service, zipcode: lookup }).lean();
+          const zoneDoc = await ZipZone.findOne({
+            service: svc.service,
+            zipcode: lookup,
+          }).lean();
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         }
@@ -2264,37 +2357,61 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
 
         const [rateDocS, rateDocB] = await Promise.all([
           ShopkeeperRate.findOne({
-            service: svc.service, type: "S",
-            minWt: { $lte: chargeableWt }, maxWt: { $gte: chargeableWt },
-          }).sort({ createdAt: -1 }).lean(),
+            service: svc.service,
+            type: "S",
+            minWt: { $lte: chargeableWt },
+            maxWt: { $gte: chargeableWt },
+          })
+            .sort({ createdAt: -1 })
+            .lean(),
           ShopkeeperRate.findOne({
-            service: svc.service, type: "B",
-            minWt: { $lte: chargeableWt }, maxWt: { $gte: chargeableWt },
-          }).sort({ createdAt: -1 }).lean(),
+            service: svc.service,
+            type: "B",
+            minWt: { $lte: chargeableWt },
+            maxWt: { $gte: chargeableWt },
+          })
+            .sort({ createdAt: -1 })
+            .lean(),
         ]);
 
         for (const rd of [rateDocS, rateDocB].filter(Boolean)) {
-          const zoneMap = rd.zones instanceof Map ? Object.fromEntries(rd.zones) : rd.zones;
+          const zoneMap =
+            rd.zones instanceof Map ? Object.fromEntries(rd.zones) : rd.zones;
           const availableZoneKeys = zoneMap ? Object.keys(zoneMap) : [];
           let rawPrice = zoneMap?.[zone];
-          if ((rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) && availableZoneKeys.length > 0) {
+          if (
+            (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) &&
+            availableZoneKeys.length > 0
+          ) {
             const firstVal = Object.values(zoneMap)[0];
-            if (firstVal !== undefined && firstVal !== null && !isNaN(firstVal)) rawPrice = firstVal;
+            if (firstVal !== undefined && firstVal !== null && !isNaN(firstVal))
+              rawPrice = firstVal;
           }
-          if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice)) continue;
+          if (rawPrice === undefined || rawPrice === null || isNaN(rawPrice))
+            continue;
 
-          const totalPrice = rd.type === "S" ? Math.round(rawPrice) : Math.round(rawPrice * chargeableWt);
+          const totalPrice =
+            rd.type === "S"
+              ? Math.round(rawPrice)
+              : Math.round(rawPrice * chargeableWt);
 
           results.push({
-            service: svc.service, network: rd.network,
-            chargeableWt, actualWt,
+            service: svc.service,
+            network: rd.network,
+            chargeableWt,
+            actualWt,
             volWt: Math.round(volWt * 100) / 100,
-            zone, rateType: rd.type, totalPrice,
+            zone,
+            rateType: rd.type,
+            totalPrice,
             tat: estimateTat(svc.service),
           });
         }
       } catch (svcErr) {
-        console.error(`[Shopkeeper Quote] Error for "${svc.service}":`, svcErr.message);
+        console.error(
+          `[Shopkeeper Quote] Error for "${svc.service}":`,
+          svcErr.message,
+        );
       }
     }
 
@@ -2302,9 +2419,11 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
 
     return {
       success: true,
-      chargeableWt, actualWt,
+      chargeableWt,
+      actualWt,
       volWt: Math.round(volWt * 100) / 100,
-      country, zipcode: zipcode || null,
+      country,
+      zipcode: zipcode || null,
       quotes: results,
     };
   } catch (error) {
@@ -2339,6 +2458,7 @@ fastify.post(
         network,
         zone,
         rateType,
+        totalPrice,
         tat,
         sourcePage,
         notes,
@@ -3964,14 +4084,17 @@ fastify.post("/api/payment/initiate", initiatePayment);
 fastify.post("/api/payment/response", async (request, reply) => {
   try {
     console.log("[Payment Response] Received callback from PG");
-    console.log("[Payment Response] Headers:", JSON.stringify(request.headers, null, 2));
-    
+    console.log(
+      "[Payment Response] Headers:",
+      JSON.stringify(request.headers, null, 2),
+    );
+
     // Get the request body
     let responseData = request.body;
     console.log("[Payment Response] Raw body type:", typeof responseData);
-    
+
     // If body is a string, parse it
-    if (typeof responseData === 'string') {
+    if (typeof responseData === "string") {
       try {
         // Try JSON first
         responseData = JSON.parse(responseData);
@@ -3985,25 +4108,28 @@ fastify.post("/api/payment/response", async (request, reply) => {
         responseData = parsed;
       }
     }
-    
+
     // If body is an array (from multipart), convert to object
     if (Array.isArray(responseData)) {
       const obj = {};
       for (const item of responseData) {
-        if (item && typeof item === 'object') {
+        if (item && typeof item === "object") {
           Object.assign(obj, item);
         }
       }
       responseData = obj;
     }
-    
+
     // Ensure we have an object
-    if (typeof responseData !== 'object' || responseData === null) {
+    if (typeof responseData !== "object" || responseData === null) {
       responseData = {};
     }
-    
-    console.log("[Payment Response] Parsed data:", JSON.stringify(responseData, null, 2));
-    
+
+    console.log(
+      "[Payment Response] Parsed data:",
+      JSON.stringify(responseData, null, 2),
+    );
+
     // Process the payment response
     const result = await paymentResponse({ body: responseData }, reply);
     return result;

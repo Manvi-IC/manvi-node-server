@@ -425,23 +425,42 @@ fastify.post(
   { config: { rateLimit: { max: 50, timeWindow: "1 minute" } } },
   async (request, reply) => {
     try {
-      const { username, password } = request.body;
+      const { username, password } = request.body || {};
+      if (!username || !password) {
+        return reply
+          .status(400)
+          .send({ success: false, message: "Username and password are required" });
+      }
+
       const adminCount = await Admin.countDocuments();
       if (adminCount === 0) {
         const hash = await bcrypt.hash("password", 10);
-        await Admin.create({ username: "admin", passwordHash: hash });
+        await Admin.create({ username: "admin", passwordHash: hash, role: "admin" });
       }
-      const admin = await Admin.findOne({ username });
+
+      const trimmedUsername = username.trim();
+      const escapedUsername = trimmedUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const admin = await Admin.findOne({
+        username: { $regex: new RegExp(`^${escapedUsername}$`, "i") },
+      });
+
       if (!admin)
         return reply
           .status(401)
           .send({ success: false, message: "Invalid credentials" });
+
       const match = await bcrypt.compare(password, admin.passwordHash);
       if (!match)
         return reply
           .status(401)
           .send({ success: false, message: "Invalid credentials" });
-      return { success: true, message: "Login successful" };
+
+      return {
+        success: true,
+        message: "Login successful",
+        role: admin.role || "admin",
+        username: admin.username,
+      };
     } catch (error) {
       return reply
         .status(500)
@@ -762,6 +781,21 @@ fastify.get("/rates/uploads", async (request, reply) => {
   }
 });
 
+function inferNetwork(serviceName, dbNetwork) {
+  if (dbNetwork) return dbNetwork;
+  const upper = String(serviceName || "").toUpperCase();
+  if (upper.includes("DHL")) return "DHL";
+  if (upper.includes("FEDEX") || upper.includes("FED")) return "FED";
+  if (upper.includes("UPS")) return "UPS";
+  if (
+    upper.includes("ARAMEX") ||
+    upper.includes("PPX") ||
+    upper.includes("GPX")
+  )
+    return "ARA";
+  return "SELF";
+}
+
 fastify.get("/rates/services", async (request, reply) => {
   try {
     const rateServices = await WalkinRate.aggregate([
@@ -775,6 +809,68 @@ fastify.get("/rates/services", async (request, reply) => {
       },
     ]);
     const zipcodeServices = await ZipZone.distinct("service");
+
+    let disabledServices = [];
+    try {
+      const cached = apiCache.get("site-settings");
+      if (cached && Array.isArray(cached.disabledServices)) {
+        disabledServices = cached.disabledServices;
+      } else {
+        const settings = await SiteSettings.findOne().lean();
+        if (settings && Array.isArray(settings.disabledServices)) {
+          disabledServices = settings.disabledServices;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to fetch disabled services for /rates/services:", e.message);
+    }
+
+    const serviceMap = new Map();
+
+    for (const [country, list] of Object.entries(SERVICE_DESTINATION_MAP)) {
+      for (const item of list) {
+        if (!serviceMap.has(item.service)) {
+          serviceMap.set(item.service, {
+            service: item.service,
+            network: inferNetwork(item.service, null),
+            destinations: [country],
+            hasRates: false,
+            slabs: 0,
+            enabled: !disabledServices.includes(item.service),
+          });
+        } else {
+          const existing = serviceMap.get(item.service);
+          if (!existing.destinations.includes(country)) {
+            existing.destinations.push(country);
+          }
+        }
+      }
+    }
+
+    for (const r of rateServices) {
+      const svcName = r._id.service;
+      const net = r._id.network || inferNetwork(svcName, null);
+      if (serviceMap.has(svcName)) {
+        const item = serviceMap.get(svcName);
+        item.network = net;
+        item.hasRates = true;
+        item.slabs = r.slabs;
+      } else {
+        serviceMap.set(svcName, {
+          service: svcName,
+          network: net,
+          destinations: [],
+          hasRates: true,
+          slabs: r.slabs,
+          enabled: !disabledServices.includes(svcName),
+        });
+      }
+    }
+
+    const allServices = Array.from(serviceMap.values()).sort((a, b) =>
+      a.service.localeCompare(b.service),
+    );
+
     return {
       success: true,
       data: {
@@ -786,8 +882,30 @@ fastify.get("/rates/services", async (request, reply) => {
           slabs: r.slabs,
         })),
         zipcodeServices,
+        allServices,
+        disabledServices,
       },
     };
+  } catch (error) {
+    return reply.status(500).send({ success: false, message: error.message });
+  }
+});
+
+fastify.put("/rates/services/status", async (request, reply) => {
+  try {
+    const { disabledServices } = request.body || {};
+    if (!Array.isArray(disabledServices)) {
+      return reply
+        .status(400)
+        .send({ success: false, message: "disabledServices must be an array" });
+    }
+    const updated = await SiteSettings.findOneAndUpdate(
+      {},
+      { $set: { disabledServices } },
+      { new: true, upsert: true },
+    );
+    apiCache.clear("site-settings");
+    return { success: true, data: updated };
   } catch (error) {
     return reply.status(500).send({ success: false, message: error.message });
   }
@@ -834,9 +952,29 @@ fastify.get("/rates/quote", async (request, reply) => {
         .send({ success: false, message: `Unknown destination: ${country}` });
     }
 
+    // Retrieve disabled services from SiteSettings (cached)
+    let disabledServices = [];
+    try {
+      const cached = apiCache.get("site-settings");
+      if (cached && Array.isArray(cached.disabledServices)) {
+        disabledServices = cached.disabledServices;
+      } else {
+        const settings = await SiteSettings.findOne().lean();
+        if (settings && Array.isArray(settings.disabledServices)) {
+          disabledServices = settings.disabledServices;
+          apiCache.set("site-settings", settings, 3600);
+        }
+      }
+    } catch (e) {
+      console.warn("[Quote Request] Failed to fetch disabled services:", e.message);
+    }
+
     const results = [];
 
     for (const svc of serviceList) {
+      if (disabledServices.includes(svc.service)) {
+        continue;
+      }
       try {
         let zone = null;
 
@@ -869,9 +1007,22 @@ fastify.get("/rates/quote", async (request, reply) => {
           zone = String(zoneDoc.zone);
         } else if (svc.zoningFromInput) {
           const lookup = zoningCountry || country;
+          const candidates = [lookup];
+          const upper = String(lookup).toUpperCase().trim();
+          if (upper.includes("CHINA")) {
+            candidates.push("CHINA", "CHINA, PEOPLE'S REPUBLIC");
+          } else if (upper.includes("PHILIPPINES")) {
+            candidates.push("PHILIPPINES", "PHILIPPINES, THE");
+          } else if (upper.includes("KOREA")) {
+            candidates.push("SOUTH KOREA", "KOREA, REPUBLIC OF", "KOREA");
+          } else if (upper === "USA" || upper.includes("UNITED STATES")) {
+            candidates.push("USA", "UNITED STATES", "UNITED STATES OF AMERICA");
+          } else if (upper === "UAE" || upper.includes("UNITED ARAB EMIRATES")) {
+            candidates.push("UAE", "UNITED ARAB EMIRATES");
+          }
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
-            zipcode: lookup,
+            zipcode: { $in: Array.from(new Set(candidates)) },
           }).lean();
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
@@ -2309,14 +2460,75 @@ fastify.post(
         rateType,
         totalPrice,
         tat,
-        notes, // ← NEW
-        sourcePage, // ← NEW
+        sourcePage,
+        notes,
       } = request.body;
 
       if (!name || !phone || !email || !destination || !service) {
         return reply
           .status(400)
           .send({ success: false, message: "Missing required fields" });
+      }
+
+      let resolvedSource = sourcePage ? String(sourcePage).trim() : "";
+      if (!resolvedSource || resolvedSource === "Website") {
+        const referer = String(
+          request.headers.referer || request.headers.origin || "",
+        ).toLowerCase();
+        const serviceLower = String(service || "").toLowerCase();
+        const notesLower = String(notes || "").toLowerCase();
+        const destLower = String(destination || "").toLowerCase();
+
+        if (
+          service === "WhatsApp Quick Enquiry" ||
+          destLower === "whatsapp_lead" ||
+          notesLower.includes("whatsapp") ||
+          referer.includes("whatsapp")
+        ) {
+          resolvedSource = "Shopkeeper WhatsApp";
+        } else if (
+          serviceLower.includes("diwali") ||
+          notesLower.includes("diwali") ||
+          referer.includes("diwali")
+        ) {
+          resolvedSource = "Diwali Campaign";
+        } else if (
+          serviceLower.includes("winter") ||
+          notesLower.includes("winter") ||
+          referer.includes("winter")
+        ) {
+          resolvedSource = "Winter Campaign";
+        } else if (
+          referer.includes("business-campaign") ||
+          notesLower.includes("business")
+        ) {
+          resolvedSource = "Business Campaign";
+        } else if (referer.includes("campaign")) {
+          resolvedSource = "Campaign Page";
+        } else if (referer.includes("shopkeeper")) {
+          resolvedSource = "Shopkeeper Page";
+        } else if (referer.includes("quote")) {
+          resolvedSource = "Get Quote";
+        } else if (
+          referer.includes("contact") ||
+          notesLower.includes("query:") ||
+          serviceLower.includes("contact")
+        ) {
+          resolvedSource = "Contact Page";
+        } else if (
+          referer.includes("book-shipment") ||
+          serviceLower.includes("booked")
+        ) {
+          resolvedSource = "Book Shipment";
+        } else if (
+          referer.endsWith("/") ||
+          referer.includes("localhost:3000/") ||
+          referer.includes("manvi.in/")
+        ) {
+          resolvedSource = "Home Page";
+        } else {
+          resolvedSource = "Website";
+        }
       }
 
       const enquiry = new QuoteEnquiry({
@@ -2338,8 +2550,8 @@ fastify.post(
         rateType: rateType || "",
         totalPrice: parseFloat(totalPrice) || 0,
         tat: tat || "",
-        notes: notes || "", // ← NEW
-        sourcePage: sourcePage || "", // ← NEW
+        sourcePage: resolvedSource,
+        notes: notes || "",
       });
 
       await enquiry.save();
@@ -2369,7 +2581,7 @@ fastify.post(
         zohoData.append("Designation", service || "");
         zohoData.append("Website", chargeableWt ? chargeableWt.toString() : "");
         zohoData.append("Company", totalPrice ? totalPrice.toString() : "0");
-        const desc = `Destination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
+        const desc = `Source Page: ${resolvedSource}\nDestination: ${destination || "N/A"}\nActual Wt: ${actualWt}\nVol Wt: ${volWt}\nDimensions: ${length}x${breadth}x${height}\nZipcode: ${zipcode || "N/A"}`;
         zohoData.append("Description", desc);
         zohoData.append("Lead Source", "Web Download");
 
@@ -2405,6 +2617,7 @@ fastify.get("/admin/quote-enquiries", async (request, reply) => {
         { phone: regex },
         { destination: regex },
         { service: regex },
+        { sourcePage: regex },
       ];
     }
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -2442,10 +2655,11 @@ fastify.get("/admin/quote-enquiries/stats", async (request, reply) => {
 
 fastify.put("/admin/quote-enquiries/:id", async (request, reply) => {
   try {
-    const { status, notes } = request.body;
+    const { status, notes, sourcePage } = request.body;
     const update = {};
     if (status !== undefined) update.status = status;
     if (notes !== undefined) update.notes = notes;
+    if (sourcePage !== undefined) update.sourcePage = sourcePage;
     const enquiry = await QuoteEnquiry.findByIdAndUpdate(
       request.params.id,
       update,
@@ -2517,6 +2731,7 @@ fastify.post("/shipment/order-create", async (request, reply) => {
         service: payload.ServiceDetails?.ServiceName || "Express",
         network: payload.ServiceDetails?.NetworkCode || "DHL",
         totalPrice: payload.FreightDetails?.NetTotal || 0,
+        sourcePage: payload.sourcePage || "Book Shipment",
         status: "BOOKED",
         notes: `AWB: ${payload.Awbno} | Manvi API Response: ${JSON.stringify(manviResult)}`,
       });

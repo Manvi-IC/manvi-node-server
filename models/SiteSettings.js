@@ -20,6 +20,10 @@ const siteSettingsSchema = new mongoose.Schema({
       { country: "UK", services: ["DHL", "ARAMEX", "UPS", "FEDEX", "SELF - DUTY Paid"] },
       { country: "USA", services: ["DHL", "ARAMEX", "UPS", "FEDEX", "SELF - DUTY Paid"] }
     ]
+  },
+  disabledServices: {
+    type: [String],
+    default: []
   }
 }, { timestamps: true });
 

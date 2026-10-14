@@ -474,6 +474,16 @@ fastify.post(
 // ===========================================================================
 
 const SERVICE_DESTINATION_MAP = {
+  USA: [
+    { service: "EX DEL BRANDED DHL DOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED DHL NDOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED UPS NDOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED FEDEX NDOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED LDH UPS", zoningFromInput: true },
+    { service: "EX DEL BRANDED JAL FEDEX SPCL CONT", zoningFromInput: true },
+    { service: "EX DEL BRANDED UPS DUTY FREE", zoningFromInput: true },
+    { service: "EX DEL BRANDED FEDEX DUTY FREE", zoningFromInput: true },
+  ],
   AUSTRALIA: [
     { service: "EX DEL AUS DIRECT", zipBased: true },
     { service: "EX DEL BRANDED DHL DOX", zoningCountry: "AUSTRALIA" },
@@ -917,9 +927,12 @@ fastify.get("/rates/quote", async (request, reply) => {
     const length = parseFloat(request.query.length) || 0;
     const breadth = parseFloat(request.query.breadth) || 0;
     const height = parseFloat(request.query.height) || 0;
-    const country = String(request.query.country || "")
+    let country = String(request.query.country || "")
       .trim()
       .toUpperCase();
+    if (country === "UNITED STATES" || country === "UNITED STATES OF AMERICA") {
+      country = "USA";
+    }
     const zipcode = String(request.query.zipcode || "")
       .trim()
       .toUpperCase();
@@ -2274,9 +2287,12 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
     const length = parseFloat(request.query.length) || 0;
     const breadth = parseFloat(request.query.breadth) || 0;
     const height = parseFloat(request.query.height) || 0;
-    const country = String(request.query.country || "")
+    let country = String(request.query.country || "")
       .trim()
       .toUpperCase();
+    if (country === "UNITED STATES" || country === "UNITED STATES OF AMERICA") {
+      country = "USA";
+    }
     const zipcode = String(request.query.zipcode || "")
       .trim()
       .toUpperCase();

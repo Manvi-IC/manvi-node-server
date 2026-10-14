@@ -513,8 +513,8 @@ const SERVICE_DESTINATION_MAP = {
     { service: "EX DEL BRANDED LDH UPS", zoningFromInput: true },
   ],
   INTERNATIONAL: [
-    { service: "EX DEL ARAMEX-PPX-NDOX", zone: "1" },
-    { service: "EX DEL ARAMEX-GPX-NDOX", zone: "1" },
+    { service: "EX DEL ARAMEX-PPX-NDOX", zoningFromInput: true },
+    { service: "EX DEL ARAMEX-GPX-NDOX", zoningFromInput: true },
     { service: "EX DEL BRANDED DHL DOX", zoningFromInput: true },
     { service: "EX DEL BRANDED DHL NDOX", zoningFromInput: true },
     { service: "EX DEL BRANDED UPS NDOX", zoningFromInput: true },
@@ -2345,9 +2345,22 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
           zone = String(zoneDoc.zone);
         } else if (svc.zoningFromInput) {
           const lookup = zoningCountry || country;
+          const candidates = [lookup];
+          const upper = String(lookup).toUpperCase().trim();
+          if (upper.includes("CHINA")) {
+            candidates.push("CHINA", "CHINA, PEOPLE'S REPUBLIC");
+          } else if (upper.includes("PHILIPPINES")) {
+            candidates.push("PHILIPPINES", "PHILIPPINES, THE");
+          } else if (upper.includes("KOREA")) {
+            candidates.push("SOUTH KOREA", "KOREA, REPUBLIC OF", "KOREA");
+          } else if (upper === "USA" || upper.includes("UNITED STATES")) {
+            candidates.push("USA", "UNITED STATES", "UNITED STATES OF AMERICA");
+          } else if (upper === "UAE" || upper.includes("UNITED ARAB EMIRATES")) {
+            candidates.push("UAE", "UNITED ARAB EMIRATES");
+          }
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
-            zipcode: lookup,
+            zipcode: { $in: Array.from(new Set(candidates)) },
           }).lean();
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);

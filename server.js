@@ -981,7 +981,8 @@ fastify.get("/rates/quote", async (request, reply) => {
         if (svc.zone) {
           zone = svc.zone;
         } else if (svc.zipBased) {
-          const cleanZip = zipcode.replace(/\s+/g, "");
+          const matchPin = zipcode.match(/\b\d{4}\b/);
+          const cleanZip = matchPin ? matchPin[0] : zipcode.replace(/\s+/g, "");
           let zoneDoc = null;
           for (const tryZip of [
             cleanZip,
@@ -2319,7 +2320,8 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
         if (svc.zone) {
           zone = svc.zone;
         } else if (svc.zipBased) {
-          const cleanZip = zipcode.replace(/\s+/g, "");
+          const matchPin = zipcode.match(/\b\d{4}\b/);
+          const cleanZip = matchPin ? matchPin[0] : zipcode.replace(/\s+/g, "");
           let zoneDoc = null;
           for (const tryZip of [
             cleanZip,

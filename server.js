@@ -474,6 +474,17 @@ fastify.post(
 // ===========================================================================
 
 const SERVICE_DESTINATION_MAP = {
+  USA: [
+    { service: "EX DEL BRANDED DHL DOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED DHL NDOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED UPS NDOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED FEDEX NDOX", zoningFromInput: true },
+    { service: "EX DEL BRANDED LDH UPS", zoningFromInput: true },
+    { service: "EX DEL BRANDED JAL FEDEX SPCL CONT", zoningFromInput: true },
+    { service: "EX DEL BRANDED UPS DUTY FREE", zoningFromInput: true },
+    { service: "EX DEL BRANDED FEDEX DUTY FREE", zoningFromInput: true },
+    { service: "EX DEL VIA LHR FEDEX IE", zoningFromInput: true },
+  ],
   AUSTRALIA: [
     { service: "EX DEL AUS DIRECT", zipBased: true },
     { service: "EX DEL BRANDED DHL DOX", zoningCountry: "AUSTRALIA" },
@@ -498,7 +509,7 @@ const SERVICE_DESTINATION_MAP = {
   ],
   UK: [
     { service: "EX DEL PRE LHR UK DPD", zoningCountry: "UK" },
-    { service: "EX DEL VIA LHR FEDEX IE", zoningCountry: "USA" },
+    { service: "EX DEL VIA LHR FEDEX IE", zoningCountry: "UK" },
     { service: "EX DEL BRANDED DHL DOX", zoningCountry: "UK" },
     { service: "EX DEL BRANDED DHL NDOX", zoningCountry: "UK" },
     { service: "EX DEL BRANDED UPS NDOX", zoningCountry: "UK" },
@@ -513,8 +524,8 @@ const SERVICE_DESTINATION_MAP = {
     { service: "EX DEL BRANDED LDH UPS", zoningFromInput: true },
   ],
   INTERNATIONAL: [
-    { service: "EX DEL ARAMEX-PPX-NDOX", zone: "1" },
-    { service: "EX DEL ARAMEX-GPX-NDOX", zone: "1" },
+    { service: "EX DEL ARAMEX-PPX-NDOX", zoningFromInput: true },
+    { service: "EX DEL ARAMEX-GPX-NDOX", zoningFromInput: true },
     { service: "EX DEL BRANDED DHL DOX", zoningFromInput: true },
     { service: "EX DEL BRANDED DHL NDOX", zoningFromInput: true },
     { service: "EX DEL BRANDED UPS NDOX", zoningFromInput: true },
@@ -917,9 +928,12 @@ fastify.get("/rates/quote", async (request, reply) => {
     const length = parseFloat(request.query.length) || 0;
     const breadth = parseFloat(request.query.breadth) || 0;
     const height = parseFloat(request.query.height) || 0;
-    const country = String(request.query.country || "")
+    let country = String(request.query.country || "")
       .trim()
       .toUpperCase();
+    if (country === "UNITED STATES" || country === "UNITED STATES OF AMERICA") {
+      country = "USA";
+    }
     const zipcode = String(request.query.zipcode || "")
       .trim()
       .toUpperCase();
@@ -981,7 +995,8 @@ fastify.get("/rates/quote", async (request, reply) => {
         if (svc.zone) {
           zone = svc.zone;
         } else if (svc.zipBased) {
-          const cleanZip = zipcode.replace(/\s+/g, "");
+          const matchPin = zipcode.match(/\b\d{4}\b/);
+          const cleanZip = matchPin ? matchPin[0] : zipcode.replace(/\s+/g, "");
           let zoneDoc = null;
           for (const tryZip of [
             cleanZip,
@@ -2273,9 +2288,12 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
     const length = parseFloat(request.query.length) || 0;
     const breadth = parseFloat(request.query.breadth) || 0;
     const height = parseFloat(request.query.height) || 0;
-    const country = String(request.query.country || "")
+    let country = String(request.query.country || "")
       .trim()
       .toUpperCase();
+    if (country === "UNITED STATES" || country === "UNITED STATES OF AMERICA") {
+      country = "USA";
+    }
     const zipcode = String(request.query.zipcode || "")
       .trim()
       .toUpperCase();
@@ -2319,7 +2337,8 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
         if (svc.zone) {
           zone = svc.zone;
         } else if (svc.zipBased) {
-          const cleanZip = zipcode.replace(/\s+/g, "");
+          const matchPin = zipcode.match(/\b\d{4}\b/);
+          const cleanZip = matchPin ? matchPin[0] : zipcode.replace(/\s+/g, "");
           let zoneDoc = null;
           for (const tryZip of [
             cleanZip,
@@ -2345,9 +2364,22 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
           zone = String(zoneDoc.zone);
         } else if (svc.zoningFromInput) {
           const lookup = zoningCountry || country;
+          const candidates = [lookup];
+          const upper = String(lookup).toUpperCase().trim();
+          if (upper.includes("CHINA")) {
+            candidates.push("CHINA", "CHINA, PEOPLE'S REPUBLIC");
+          } else if (upper.includes("PHILIPPINES")) {
+            candidates.push("PHILIPPINES", "PHILIPPINES, THE");
+          } else if (upper.includes("KOREA")) {
+            candidates.push("SOUTH KOREA", "KOREA, REPUBLIC OF", "KOREA");
+          } else if (upper === "USA" || upper.includes("UNITED STATES")) {
+            candidates.push("USA", "UNITED STATES", "UNITED STATES OF AMERICA");
+          } else if (upper === "UAE" || upper.includes("UNITED ARAB EMIRATES")) {
+            candidates.push("UAE", "UNITED ARAB EMIRATES");
+          }
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
-            zipcode: lookup,
+            zipcode: { $in: Array.from(new Set(candidates)) },
           }).lean();
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);

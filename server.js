@@ -429,17 +429,27 @@ fastify.post(
       if (!username || !password) {
         return reply
           .status(400)
-          .send({ success: false, message: "Username and password are required" });
+          .send({
+            success: false,
+            message: "Username and password are required",
+          });
       }
 
       const adminCount = await Admin.countDocuments();
       if (adminCount === 0) {
         const hash = await bcrypt.hash("password", 10);
-        await Admin.create({ username: "admin", passwordHash: hash, role: "admin" });
+        await Admin.create({
+          username: "admin",
+          passwordHash: hash,
+          role: "admin",
+        });
       }
 
       const trimmedUsername = username.trim();
-      const escapedUsername = trimmedUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const escapedUsername = trimmedUsername.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      );
       const admin = await Admin.findOne({
         username: { $regex: new RegExp(`^${escapedUsername}$`, "i") },
       });
@@ -832,7 +842,10 @@ fastify.get("/rates/services", async (request, reply) => {
         }
       }
     } catch (e) {
-      console.warn("Failed to fetch disabled services for /rates/services:", e.message);
+      console.warn(
+        "Failed to fetch disabled services for /rates/services:",
+        e.message,
+      );
     }
 
     const serviceMap = new Map();
@@ -979,7 +992,10 @@ fastify.get("/rates/quote", async (request, reply) => {
         }
       }
     } catch (e) {
-      console.warn("[Quote Request] Failed to fetch disabled services:", e.message);
+      console.warn(
+        "[Quote Request] Failed to fetch disabled services:",
+        e.message,
+      );
     }
 
     const results = [];
@@ -1020,24 +1036,21 @@ fastify.get("/rates/quote", async (request, reply) => {
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         } else if (svc.zoningFromInput) {
-          const lookup = zoningCountry || country;
-          const candidates = [lookup];
-          const upper = String(lookup).toUpperCase().trim();
-          if (upper.includes("CHINA")) {
-            candidates.push("CHINA", "CHINA, PEOPLE'S REPUBLIC");
-          } else if (upper.includes("PHILIPPINES")) {
-            candidates.push("PHILIPPINES", "PHILIPPINES, THE");
-          } else if (upper.includes("KOREA")) {
-            candidates.push("SOUTH KOREA", "KOREA, REPUBLIC OF", "KOREA");
-          } else if (upper === "USA" || upper.includes("UNITED STATES")) {
-            candidates.push("USA", "UNITED STATES", "UNITED STATES OF AMERICA");
-          } else if (upper === "UAE" || upper.includes("UNITED ARAB EMIRATES")) {
-            candidates.push("UAE", "UNITED ARAB EMIRATES");
-          }
+          // Exact-match lookup only.
+          // The Excel rate sheet contains distinct rows for countries like
+          // "UAE" and "UNITED ARAB EMIRATES" (also "CONGO" vs
+          // "CONGO, DEMOCRATIC REPUBLIC OF", etc.). Using $in with multiple
+          // candidates merged these into a single zone, causing the wrong
+          // rate to be returned. Look up exactly what the user selected.
+          const lookup = String(zoningCountry || country)
+            .toUpperCase()
+            .trim();
+
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
-            zipcode: { $in: Array.from(new Set(candidates)) },
+            zipcode: lookup,
           }).lean();
+
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         }
@@ -1881,31 +1894,25 @@ fastify.post(
         });
       }
       if (!/^\d{10}$/.test(String(phone).trim())) {
-        return reply
-          .status(400)
-          .send({
-            success: false,
-            message: "Phone must be exactly 10 digits.",
-          });
+        return reply.status(400).send({
+          success: false,
+          message: "Phone must be exactly 10 digits.",
+        });
       }
       if (String(password).length < 6) {
-        return reply
-          .status(400)
-          .send({
-            success: false,
-            message: "Password must be at least 6 characters.",
-          });
+        return reply.status(400).send({
+          success: false,
+          message: "Password must be at least 6 characters.",
+        });
       }
 
       const cleanEmail = String(email).toLowerCase().trim();
       const existing = await Shopkeeper.findOne({ email: cleanEmail });
       if (existing) {
-        return reply
-          .status(409)
-          .send({
-            success: false,
-            message: "This email is already registered. Please log in.",
-          });
+        return reply.status(409).send({
+          success: false,
+          message: "This email is already registered. Please log in.",
+        });
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
@@ -1942,12 +1949,10 @@ fastify.post(
       });
     } catch (error) {
       if (error.code === 11000) {
-        return reply
-          .status(409)
-          .send({
-            success: false,
-            message: "This email is already registered.",
-          });
+        return reply.status(409).send({
+          success: false,
+          message: "This email is already registered.",
+        });
       }
       console.error("Shopkeeper register error:", error);
       return reply.status(500).send({ success: false, message: error.message });
@@ -1962,22 +1967,18 @@ fastify.post(
     try {
       const { email, password } = request.body || {};
       if (!email || !password) {
-        return reply
-          .status(400)
-          .send({
-            success: false,
-            message: "Email and password are required.",
-          });
+        return reply.status(400).send({
+          success: false,
+          message: "Email and password are required.",
+        });
       }
       const cleanEmail = String(email).toLowerCase().trim();
       const shopkeeper = await Shopkeeper.findOne({ email: cleanEmail });
       if (!shopkeeper) {
-        return reply
-          .status(404)
-          .send({
-            success: false,
-            message: "No account found with this email.",
-          });
+        return reply.status(404).send({
+          success: false,
+          message: "No account found with this email.",
+        });
       }
       const match = await bcrypt.compare(password, shopkeeper.passwordHash);
       if (!match) {
@@ -2312,12 +2313,10 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
 
     const ZIPCODE_COUNTRIES = ["AUSTRALIA", "CANADA"];
     if (ZIPCODE_COUNTRIES.includes(country) && !zipcode) {
-      return reply
-        .status(400)
-        .send({
-          success: false,
-          message: `Zipcode is required for ${country}`,
-        });
+      return reply.status(400).send({
+        success: false,
+        message: `Zipcode is required for ${country}`,
+      });
     }
 
     const serviceList = SERVICE_DESTINATION_MAP[country];
@@ -2362,24 +2361,21 @@ fastify.get("/shopkeeper/rates/quote", async (request, reply) => {
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         } else if (svc.zoningFromInput) {
-          const lookup = zoningCountry || country;
-          const candidates = [lookup];
-          const upper = String(lookup).toUpperCase().trim();
-          if (upper.includes("CHINA")) {
-            candidates.push("CHINA", "CHINA, PEOPLE'S REPUBLIC");
-          } else if (upper.includes("PHILIPPINES")) {
-            candidates.push("PHILIPPINES", "PHILIPPINES, THE");
-          } else if (upper.includes("KOREA")) {
-            candidates.push("SOUTH KOREA", "KOREA, REPUBLIC OF", "KOREA");
-          } else if (upper === "USA" || upper.includes("UNITED STATES")) {
-            candidates.push("USA", "UNITED STATES", "UNITED STATES OF AMERICA");
-          } else if (upper === "UAE" || upper.includes("UNITED ARAB EMIRATES")) {
-            candidates.push("UAE", "UNITED ARAB EMIRATES");
-          }
+          // Exact-match lookup only.
+          // The Excel rate sheet contains distinct rows for countries like
+          // "UAE" and "UNITED ARAB EMIRATES" (also "CONGO" vs
+          // "CONGO, DEMOCRATIC REPUBLIC OF", etc.). Using $in with multiple
+          // candidates merged these into a single zone, causing the wrong
+          // rate to be returned. Look up exactly what the user selected.
+          const lookup = String(zoningCountry || country)
+            .toUpperCase()
+            .trim();
+
           const zoneDoc = await ZipZone.findOne({
             service: svc.service,
-            zipcode: { $in: Array.from(new Set(candidates)) },
+            zipcode: lookup,
           }).lean();
+
           if (!zoneDoc) continue;
           zone = String(zoneDoc.zone);
         }

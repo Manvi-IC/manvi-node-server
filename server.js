@@ -509,6 +509,7 @@ const SERVICE_DESTINATION_MAP = {
   ],
   UK: [
     { service: "EX DEL PRE LHR UK DPD", zoningCountry: "UK" },
+    { service: "EX DEL VIA LHR FEDEX IE", zoningCountry: "UK" },
     { service: "EX DEL BRANDED DHL DOX", zoningCountry: "UK" },
     { service: "EX DEL BRANDED DHL NDOX", zoningCountry: "UK" },
     { service: "EX DEL BRANDED UPS NDOX", zoningCountry: "UK" },
